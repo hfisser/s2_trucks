@@ -37,26 +37,9 @@ class RequestBuilder:
         sample_list = ["sample." + band for band in self.bands]
         eval_script = eval_script.replace("band_list", str(self.bands))
         eval_script = eval_script.replace("n_bands", str(len(self.bands)))
-        self.eval_script = eval_script.replace("sample_list", str(sample_list))
-
-#        self.eval_script = """
- #           //VERSION=3
-  #
-   #         function setup() {
-    #            return {
-     #               input: [{
-      #                  bands: ["B02", "B03", "B04"]
-      #              }],
-        #            output: {
-         #               bands: 3
-          #          }
-           #     };
-            #}
-        
-        #    function evaluatePixel(sample) {
-       #         return [sample.B04, sample.B03, sample.B02];
-         #   }
-        #"""
+        eval_script = eval_script.replace("'", '"')
+        eval_script = eval_script.replace("sample_list", str(sample_list))
+        self.eval_script = eval_script.replace("'", "")
 
     def request(self, config):
         request = SentinelHubRequest(
