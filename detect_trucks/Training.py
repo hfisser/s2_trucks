@@ -48,7 +48,7 @@ class TrainingLoop:
     def loop_rsquared(self, band_stack_files, init_min_rsquared, init_max_rsquared, init_min_score, init_max_score,
                       min_ratio_thresholds, sub_box):
         t0 = datetime.now()
-        step_r_squared = (init_max_rsquared - init_min_rsquared) / self.runs
+        #step_r_squared = (init_max_rsquared - init_min_rsquared) / self.runs
         step_score = (init_max_score - init_min_score) / self.runs
         #self.r_squared_thresholds = np.arange(init_min_rsquared, init_max_rsquared + step_r_squared, step_r_squared)
         self.score_thresholds = np.arange(init_min_score, init_max_score + step_score, step_score)
