@@ -1,4 +1,4 @@
-from sentinelhub import MimeType, CRS, BBox, SentinelHubRequest, bbox_to_dimensions, DataCollection
+from sentinelhub import MimeType, CRS, BBox, SentinelHubRequest, bbox_to_dimensions
 
 
 class RequestBuilder:
@@ -41,23 +41,14 @@ class RequestBuilder:
         eval_script = eval_script.replace("sample_list", str(sample_list))
         self.eval_script = eval_script.replace("'", "")
 
-    def request(self, config):
-        request = SentinelHubRequest(
-            evalscript=self.eval_script,
-            input_data=[
-                SentinelHubRequest.input_data(
-                    data_collection=self.dataset,
-                    time_interval=self.time_period,
-                )
-            ],
-            responses=[
-                SentinelHubRequest.output_response("default", MimeType.TIFF)
-            ],
-            bbox=self.bbox,
-            size=self.bbox_size,
-            config=config
-        )
-        return request
+    def request(self, config, dir_save):
+        input_data = [SentinelHubRequest.input_data(data_collection=self.dataset, time_interval=self.time_period)]
+        response = [SentinelHubRequest.output_response("default", MimeType.TIFF)]
+        kwargs = {"evalscript": self.eval_script, "input_data": input_data, "responses": response, "bbox": self.bbox,
+                  "size": self.bbox_size, "config": config}
+        if dir_save is not None:
+            kwargs["data_folder"] = dir_save
+        return SentinelHubRequest(kwargs)
 
     @staticmethod
     def get_data(request):
