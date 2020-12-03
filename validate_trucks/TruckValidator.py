@@ -79,15 +79,15 @@ class Validator:
             sh.set_credentials(SH_CREDENTIALS_FILE)
             band_stack, dir_data = sh.get_data(self.bbox_wgs84, period, DataCollection.SENTINEL2_L2A, band_names,
                                                resolution, self.dirs["s2"])
-        files = glob(self.dirs["s2"] + os.sep + "*.tiff")
-        if len(files) > 1:
-            print("Several files, don't know which to read from %s" % self.dirs["s2"])
-            raise FileNotFoundError
-        else:
-            reflectance_file = copyfile(files[0], self.s2_data_file)
+            files = glob(dir_data + os.sep + "*.tiff")
+            if len(files) > 1:
+                print("Several files, don't know which to read from %s" % self.dirs["s2"])
+                raise FileNotFoundError
+            else:
+                reflectance_file = copyfile(files[0], self.s2_data_file)
         # read through rio in order to easily have metadata
         try:
-            with rio.open(reflectance_file) as src:
+            with rio.open(self.s2_data_file) as src:
                 meta = src.meta
                 band_stack_np = np.zeros((meta["width"], meta["height"], meta["n_bands"]))
                 for b in range(band_stack_np.shape[0]):
