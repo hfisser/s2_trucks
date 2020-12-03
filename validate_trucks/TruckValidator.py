@@ -31,17 +31,17 @@ OSM_BUFFER = 30
 hour, minutes, year = 10, 10, 2018
 
 stations_a2 = ["Immensen (3489)", "Theeßen (3810)", "Alleringersleben (3837)", "Peine (3306)"]
-stations = {"Theeßen (3810)": [],
-            "Schuby (1189)": [],
-            "Salzbergen (3499)": [],
-            "Nieder Seifersdorf (4123)": [],
-            "AS Dierdorf VQ Nord (7781)": [],
-            "Offenburg (8054)": [],
-            "Reussenberg (8168)": [],
-            "Lenting (S) (9090)": [],
-            "Röstebachtalbrücke (4372)": [],
-            "Sprakensehl (4702)": [],  # Bundesstraße
-            "Crailsheim-Süd (8827)": []}
+stations = {"Theeßen (3810)": ["2018-11-28", "2018-11-28"],
+            "Schuby (1189)": ["2018-05-05", "2018-05-05"],
+            "Salzbergen (3499)": ["2018-06-07", "2018-06-07"],
+            "Nieder Seifersdorf (4123)": ["2018-10-31", "2018-10-31"],
+            "AS Dierdorf VQ Nord (7781)": ["2018-05-08", "2018-05-08"],
+            "Offenburg (8054)": ["2018-09-27", "2018-09-27"],
+            "Reussenberg (8168)": ["2018-04-27", "2018-04-27"],
+            "Lenting (S) (9090)": ["2018-04-07", "2018-04-07"],
+            "Röstebachtalbrücke (4372)": ["2018-04-10", "2018-04-10"],
+            "Sprakensehl (4702)": ["2018-04-20", "2018-04-20"],  # Bundesstraße
+            "Crailsheim-Süd (8827)": ["2018-04-27", "2018-04-27"]}  # Bundesstraße
 
 
 class Validator:
