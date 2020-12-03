@@ -48,8 +48,4 @@ class RequestBuilder:
                   "size": self.bbox_size, "config": config}
         if dir_save is not None:
             kwargs["data_folder"] = dir_save
-        return SentinelHubRequest(kwargs)
-
-    @staticmethod
-    def get_data(request):
-        return request.get_data()
+        return SentinelHubRequest(**kwargs)

@@ -5,7 +5,7 @@ from SentinelHubDataAccess.RequestBuilder import RequestBuilder
 creds_file = os.path.join("F:" + os.sep + "sh", "sh.txt")
 aoi = (9.56, 52, 9.56 + 0.014, 52 + 0.009)  # xmin, ymin
 #aoi = (9.56, 52, 12.73, 52 + 0.009)
-time_period = ("2019-07-03", "2019-07-05")
+time_period = ("2019-07-04", "2019-07-04")
 band_names = ["B08", "B04", "B03", "B02", "CLM"]
 dataset_name = DataCollection.SENTINEL2_L2A
 spatial_resolution = 10
@@ -28,8 +28,8 @@ class SentinelHub:
 
     def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None):
         sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
-        request = sh_request_builder.request(self.sh_config, save_dir)
-        data = request.get_data(dir_save)
+        request = sh_request_builder.request(self.sh_config, dir_save)
+        data = request.get_data(save_data=dir_save is not None)
         print("Retrieved data of shape: %s" % str(data[0].shape))
         return data[0], request.data_folder
 
@@ -37,5 +37,5 @@ class SentinelHub:
 if __name__ == "__main__":
     sh = SentinelHub()
     sh.set_credentials(creds_file)
-    band_data, save_dir = sh.get_data(aoi, time_period, dataset_name, band_names, spatial_resolution,
+    band_data, dir_data = sh.get_data(aoi, time_period, dataset_name, band_names, spatial_resolution,
                                       dir_out)
