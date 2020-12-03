@@ -195,14 +195,6 @@ class Validator:
         self.detections = pd.concat(detections_within)
 
     @staticmethod
-    def get_bbox_id(point, grid_gadm):
-        point_in_box = []
-        for i, geom in enumerate(grid_gadm.geometry):
-            if geom.contains(point):
-                point_in_box.append(grid_gadm.bbox_id[i])
-        return point_in_box
-
-    @staticmethod
     def get_station_meta(station_name):
         """
         gets UTM coordinates of BAST traffic count station from BAST webpage
