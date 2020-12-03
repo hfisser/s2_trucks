@@ -42,9 +42,6 @@ stations = {"Theeßen (3810)": [],
             "Röstebachtalbrücke (4372)": [],
             "Sprakensehl (4702)": [],  # Bundesstraße
             "Crailsheim-Süd (8827)": []}
-utm_zones = [32, 32, 32, 33, 32, 32, 32, 32, 32, 32, 32]
-
-periods = []
 
 
 class Validator:
@@ -57,22 +54,22 @@ class Validator:
         for directory in self.dirs.values():
             if not os.path.exists(directory):
                 os.mkdir(directory)
+        self.validation_file = os.path.join(self.dirs["validation"], "validation_run.csv")
         self.station_name = station_name
         self.station_meta = self.get_station_meta(station_name)
         bbox = aois[aois["Name"] == station_name].geometry.bounds
         self.bbox_wgs84 = (bbox.miny[0], bbox.minx[0], bbox.maxy[0], bbox.maxx[0])  # min lat, min lon, max lat, max lon
         self.crs = aois.crs
         self.lat, self.lon = None, None
-        self.detections = None
-        self.osm_roads = None
+        self.detections, self.osm_roads = None, None
         self.date = None
         self.detections_file, self.s2_data_file = None, None
 
-    def detect(self, period, dir_save):
+    def detect(self, period):
         self.date = period[0]
         band_names = ["B04", "B03", "B02", "CLM"]
         resolution = 10
-        dir_save_archive = os.path.join(dir_save, "archive")
+        dir_save_archive = os.path.join(self.dirs["s2"], "archive")
         if not os.path.exists(dir_save_archive):
             os.mkdir(dir_save_archive)
         self.s2_data_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s.tiff" % (self.station_name, period[0],
@@ -81,10 +78,10 @@ class Validator:
             sh = SentinelHub()
             sh.set_credentials(SH_CREDENTIALS_FILE)
             band_stack, dir_data = sh.get_data(self.bbox_wgs84, period, DataCollection.SENTINEL2_L2A, band_names,
-                                               resolution, dir_save)
-        files = glob(dir_save + os.sep + "*.tiff")
+                                               resolution, self.dirs["s2"])
+        files = glob(self.dirs["s2"] + os.sep + "*.tiff")
         if len(files) > 1:
-            print("Several files, don't know which to read from %s" % dir_save)
+            print("Several files, don't know which to read from %s" % self.dirs["s2"])
             raise FileNotFoundError
         else:
             reflectance_file = copyfile(files[0], self.s2_data_file)
@@ -107,10 +104,15 @@ class Validator:
         # remove original band stack file that has been moved to archive yet
         os.remove(files[0])
         self.detections = detector.detect_trucks(band_stack_np)
-        self.detections_file = os.path.join(self.dirs["detections"], "")
-        self.detections.to_file()
+        self.detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
+                                            (self.date, self.station_name))
+        self.detections.to_file(self.detections_file)
 
     def validate(self):
+        try:
+            validation_pd = pd.read_csv(self.validation_file)
+        except FileNotFoundError:
+            validation_pd = pd.DataFrame()
         hour_proportion = (minutes / 60)
         station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
         station_file = station_folder + "_%s.csv" % str(year)
@@ -158,14 +160,15 @@ class Validator:
         date_station_format = self.date[2:].replace("-", "")  # e.g. "2018-12-31" -> "181231"
         time_match = (station_counts["Datum"] == int(date_station_format)) * (station_counts["Stunde"] == hour)
         station_counts_hour = station_counts[time_match]
-        validation_pd = pd.DataFrame()
         idx = len(validation_pd)
         for key, value in {"station_file": station_file, "s2_counts_file": self.s2_data_file,
-                           "s2_data_file": self.detections_file,
-                           "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach)}:
+                           "detections_file": self.detections_file,
+                           "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach)}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
+            # add counts proportional to number of minutes
             validation_pd.loc[idx, column] = [station_counts_hour[column].iloc[0] * hour_proportion]
+        validation_pd.to_csv(self.validation_file)
 
     def prepare_s2_counts(self):
         osm_file = get_roads(list(self.bbox_wgs84), ["motorway", "trunk", "primary"], OSM_BUFFER,
@@ -267,4 +270,8 @@ class Validator:
 
 
 if __name__ == "__main__":
-    print()
+    for station, acquisition_period in stations.items():
+        print("Validating at station: %s" % station)
+        validator = Validator(station, aois_file, dir_validation, dir_osm)
+        validator.detect(acquisition_period)
+        validator.validate()
