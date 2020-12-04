@@ -28,6 +28,7 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
     truth = pd.read_csv(truth_csv, index_col=0)
     arr, meta = rio_read_all_bands(img_file)
     arr[np.isnan(arr)] = 0.
+    arr = rescale(arr, 0, 1)
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
@@ -36,7 +37,8 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         box = boxes_gpd.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
-        sub_arr = rescale(arr[0:4, y0:y1+1, x0:x1+1].copy(), 0, 1)
+        sub_arr_copy = arr[0:4, y0:y1+1, x0:x1+1].copy()
+        sub_arr = rescale(sub_arr_copy.copy(), 0, 1)
         n_bands = sub_arr.shape[0] - 1
         ratios = np.zeros((n_bands * 2 + 2, sub_arr.shape[1], sub_arr.shape[2]))
         ratio_counterparts = [[1, 2], [0, 2], [0, 1]]
@@ -45,6 +47,8 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
                 ratios[band_idx + band_idx + j] = normalized_ratio(sub_arr[band_idx], sub_arr[k])
         ratios[-2] = np.nanstd(sub_arr[0:3], 0) * 10
         ratios[-1] = np.nanstd(ratios, 0) * 10
+        blue_ratios = np.nansum(ratios[4:6], 0)
+        blue_max_ratio_idx = np.where(blue_ratios == np.nanmax(blue_ratios))
         index = len(truth)
         blue, green, red = sub_arr[2], sub_arr[1], sub_arr[0]
         max_blue = blue.max()
@@ -101,15 +105,15 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         truth.loc[index, "std_ndvi"] = ndvi.std()
         truth.loc[index, "max_dist_green"] = offset_green
         truth.loc[index, "max_dist_red"] = offset_red
-        truth.loc[index, "rgb_vector00"] = rgb_vector[0] #rgb_vector[0, 0]
-        truth.loc[index, "rgb_vector01"] = rgb_vector[1] #rgb_vector[0, 1]
-        truth.loc[index, "rgb_vector02"] = rgb_vector[2] #rgb_vector[0, 2]
-        truth.loc[index, "rgb_vector10"] = rgb_vector[3] #rgb_vector[1, 0]
-        truth.loc[index, "rgb_vector11"] = rgb_vector[4] #rgb_vector[1, 1]
-        truth.loc[index, "rgb_vector12"] = rgb_vector[5] #rgb_vector[1, 2]
-        truth.loc[index, "rgb_vector20"] = rgb_vector[6] #rgb_vector[2, 0]
-        truth.loc[index, "rgb_vector21"] = rgb_vector[7] #rgb_vector[2, 1]
-        truth.loc[index, "rgb_vector22"] = rgb_vector[8] #rgb_vector[2, 2]
+        truth.loc[index, "rgb_vector00"] = rgb_vector[0]
+        truth.loc[index, "rgb_vector01"] = rgb_vector[1]
+        truth.loc[index, "rgb_vector02"] = rgb_vector[2]
+        truth.loc[index, "rgb_vector10"] = rgb_vector[3]
+        truth.loc[index, "rgb_vector11"] = rgb_vector[4]
+        truth.loc[index, "rgb_vector12"] = rgb_vector[5]
+        truth.loc[index, "rgb_vector20"] = rgb_vector[6]
+        truth.loc[index, "rgb_vector21"] = rgb_vector[7]
+        truth.loc[index, "rgb_vector22"] = rgb_vector[8]
         truth.loc[index, "rgb_vector30"] = rgb_vector[9]
         truth.loc[index, "rgb_vector31"] = rgb_vector[10]
         truth.loc[index, "rgb_vector32"] = rgb_vector[11]
@@ -122,13 +126,12 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         truth.loc[index, "rgb_vector60"] = rgb_vector[18]
         truth.loc[index, "rgb_vector61"] = rgb_vector[19]
         truth.loc[index, "rgb_vector62"] = rgb_vector[20]
-        truth.loc[index, "rgb_vector70"] = rgb_vector[21]
-        truth.loc[index, "rgb_vector71"] = rgb_vector[22]
-        truth.loc[index, "rgb_vector72"] = rgb_vector[23]
         truth.loc[index, "red_green_spatial_angle"] = vector_test["red_green_spatial_angle"]
         truth.loc[index, "skewness"] = skew(sub_arr.flatten())
         truth.loc[index, "kurtosis"] = kurtosis(sub_arr.flatten())
-        truth.loc[index, "std"] = np.nanmax(np.nanstd(sub_arr[0:3], 0)) * 10
+        truth.loc[index, "std"] = np.nanmean(np.nanstd(sub_arr[0:3], 0)) * 10
+        truth.loc[index, "std_at_max_blue"] = np.nanstd(sub_arr_copy[0:3, blue_max_ratio_idx[0][0],
+                                                        blue_max_ratio_idx[1][0]], 0) * 10
     print("Number of truth features in csv: %s" % (str(len(truth))))
     truth.to_csv(truth_csv)
 
@@ -192,7 +195,10 @@ def analyze_statistics(truth_csv):
                                "mean_std": [float(np.nanmean(truth["std"]))],
                                "std_std": [float(np.nanstd(truth["std"]))],
                                "min_std": [float(np.nanmin(truth["std"]))],
-                               "max_std": [float(np.nanmax(truth["std"]))]})
+                               "max_std": [float(np.nanmax(truth["std"]))],
+                               "min_std_at_max_blue": [float(np.nanmin(truth["std_at_max_blue"]))],
+                               "mean_std_at_max_blue": [float(np.nanmean(truth["std_at_max_blue"]))],
+                               "q1_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.01]))]})
     print(thresholds)
     thresholds.astype(np.float64).to_csv(os.path.join(os.path.dirname(truth_csv), "thresholds.csv"))
 
@@ -254,12 +260,12 @@ def calc_angles(stack, ratios, detections):
     rgb_vector = np.hstack([ratios[4:6, blue_y, blue_x],
                             ratios[2:4, green_y, green_x],
                             ratios[0:2, red_y, red_x],
-                            ratios[6:, blue_y, blue_x],
-                            ratios[6:, green_y, green_x],
-                            ratios[6:, red_y, red_x],
-                            ratios[7:, blue_y, blue_x],
-                            ratios[7:, green_y, green_x],
-                            ratios[7:, red_y, red_x],
+                            ratios[6, blue_y, blue_x],
+                            ratios[6, green_y, green_x],
+                            ratios[6, red_y, red_x],
+                            ratios[7, blue_y, blue_x],
+                            ratios[7, green_y, green_x],
+                            ratios[7, red_y, red_x],
                             stack[2, blue_y, blue_x],
                             stack[2, green_y, green_x],
                             stack[2, red_y, red_x],
@@ -283,7 +289,7 @@ def cluster_rgb_vectors(truth_csv, thresholds_csv, rgb_vectors_csv, num_clusters
     thresholds = pd.read_csv(thresholds_csv, index_col=0)
     # vectors n*9
     col_names = []
-    for i in [0, 1, 2, 3, 4, 5, 6, 7]:
+    for i in [0, 1, 2, 3, 4, 5, 6]:
         col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
     vectors = np.vstack([truth[col] for col in col_names]).swapaxes(0, 1)
     # cluster with KMeans
