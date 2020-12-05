@@ -1,4 +1,6 @@
-import os, utm, requests
+import os
+import utm
+import requests
 import numpy as np
 import rasterio as rio
 import geopandas as gpd
