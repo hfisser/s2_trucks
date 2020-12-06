@@ -129,7 +129,7 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         truth.loc[index, "red_green_spatial_angle"] = vector_test["red_green_spatial_angle"]
         truth.loc[index, "skewness"] = skew(sub_arr.flatten())
         truth.loc[index, "kurtosis"] = kurtosis(sub_arr.flatten())
-        truth.loc[index, "std"] = np.nanmean(np.nanstd(sub_arr[0:3], 0)) * 10
+        truth.loc[index, "std"] = np.nanmax(np.nanstd(sub_arr[0:3], 0)) * 10
         truth.loc[index, "std_at_max_blue"] = np.nanstd(sub_arr_copy[0:3, blue_max_ratio_idx[0][0],
                                                         blue_max_ratio_idx[1][0]], 0) * 10
     print("Number of truth features in csv: %s" % (str(len(truth))))
