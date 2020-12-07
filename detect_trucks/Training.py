@@ -28,10 +28,10 @@ COLUMN_KEYS = ["validation_percentage", "detection_percentage",
                "validation_intersection_percentage", "detection_intersection_percentage"]
 
 # parameters
-subset_box = {"ymin": 0, "xmin": 0, "ymax": 0, "xmax": 0}
-n_epochs, n_runs = 2, 5
+subset_box = {"ymin": 3000, "xmin": 1000, "ymax": 5000, "xmax": 3000}
+n_epochs, n_runs = 1, 5
 min_r_squared, max_r_squared = 0.5, 0.9
-min_score, max_score = 1., 1.8
+min_score, max_score = 1., 1.6
 step_ratios = 0.005
 min_ratios = -step_ratios
 max_ratios = min_ratios + step_ratios * 10
@@ -109,6 +109,7 @@ class TrainingLoop:
                         accuracy_pd.loc[idx, key] = accuracy_dict[key]
                 accuracy_pd.to_csv(accuracy_file)
                 accuracy_files.append(accuracy_file)
+                detector, band_stack_np = None, None
             self._evaluate(accuracy_files)
         t1 = datetime.now()
         print("Training loop finished\nTime elapsed: %s" % str(np.round((t1 - t0).total_seconds() / 60, 1)))
