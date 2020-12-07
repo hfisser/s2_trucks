@@ -24,8 +24,9 @@ overwrite_truth_csv = True
 training_percentage = 80
 
 
-def extract_statistics(img_file, boxes_gpd, truth_csv):
+def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv):
     truth = pd.read_csv(truth_csv, index_col=0)
+    spectra = pd.read_csv(spectra_csv, index_col=0)
     arr, meta = rio_read_all_bands(img_file)
     arr[np.isnan(arr)] = 0.
     arr = rescale(arr, 0, 1)
@@ -78,15 +79,15 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         ndvi = normalized_ratio(sub_arr[3], sub_arr[0])
         truth.loc[index, "image_file"] = img_file
         truth.loc[index, "box_number"] = i
-        truth.loc[index, "max_red"] = red.max()
-        truth.loc[index, "min_red"] = red.min()
-        truth.loc[index, "mean_red"] = red.mean()
-        truth.loc[index, "max_green"] = green.max()
-        truth.loc[index, "min_green"] = green.min()
-        truth.loc[index, "mean_green"] = green.mean()
-        truth.loc[index, "max_blue"] = max_blue
-        truth.loc[index, "min_blue"] = blue.min()
-        truth.loc[index, "mean_blue"] = blue.mean()
+        truth.loc[index, "max_red"] = np.nanmax(sub_arr_copy[0])
+        truth.loc[index, "min_red"] = np.nanmin(sub_arr_copy[0])
+        truth.loc[index, "mean_red"] = np.nanmean(sub_arr_copy[0])
+        truth.loc[index, "max_green"] = np.nanmax(sub_arr_copy[1])
+        truth.loc[index, "min_green"] = np.nanmin(sub_arr_copy[1])
+        truth.loc[index, "mean_green"] = np.nanmean(sub_arr_copy[1])
+        truth.loc[index, "max_blue"] = np.nanmax(sub_arr_copy[2])
+        truth.loc[index, "min_blue"] = np.nanmin(sub_arr_copy[2])
+        truth.loc[index, "mean_blue"] = np.nanmean(sub_arr_copy[2])
         truth.loc[index, "max_br_ratio"] = br_ratio.max()
         truth.loc[index, "min_br_ratio"] = br_ratio.min()
         truth.loc[index, "mean_br_ratio"] = br_ratio.mean()
@@ -129,14 +130,20 @@ def extract_statistics(img_file, boxes_gpd, truth_csv):
         truth.loc[index, "red_green_spatial_angle"] = vector_test["red_green_spatial_angle"]
         truth.loc[index, "skewness"] = skew(sub_arr.flatten())
         truth.loc[index, "kurtosis"] = kurtosis(sub_arr.flatten())
-        truth.loc[index, "std"] = np.nanmax(np.nanstd(sub_arr[0:3], 0)) * 10
+        truth.loc[index, "std"] = np.nanmean(np.nanstd(sub_arr[0:3], 0)) * 10
         truth.loc[index, "std_at_max_blue"] = np.nanstd(sub_arr_copy[0:3, blue_max_ratio_idx[0][0],
                                                         blue_max_ratio_idx[1][0]], 0) * 10
+        y, x = blue_max_ratio_idx[0][0], blue_max_ratio_idx[1][0]
+        spectra.loc[index, "b08"] = sub_arr[3, y, x]
+        spectra.loc[index, "b02"] = sub_arr_copy[2, y, x]
+        spectra.loc[index, "b03"] = sub_arr_copy[1, y, x]
+        spectra.loc[index, "b04"] = sub_arr_copy[0, y, x]
     print("Number of truth features in csv: %s" % (str(len(truth))))
     truth.to_csv(truth_csv)
+    spectra.to_csv(spectra_csv)
 
 
-def analyze_statistics(truth_csv):
+def analyze_statistics(truth_csv, spectra_csv):
     truth = pd.read_csv(truth_csv, index_col=0)
     bg_thresholds = calc_ratio_thresholds(np.float32(truth.max_bg_ratio))
     br_thresholds = calc_ratio_thresholds(np.float32(truth.max_br_ratio))
@@ -157,9 +164,9 @@ def analyze_statistics(truth_csv):
                                "blue_low": [float(truth.mean_blue.min())],
                                "green_low": [float(truth.mean_green.min())],
                                "red_low": [float(truth.mean_red.min())],
-                               "blue_high": [float(np.quantile(truth.max_blue, q=[0.96]))],
-                               "green_high": [float(np.quantile(truth.max_green, q=[0.96]))],
-                               "red_high": [float(np.quantile(truth.max_red, q=[0.96]))],
+                               "blue_high": [float(np.quantile(truth.max_blue, q=[0.98]))],
+                               "green_high": [float(np.quantile(truth.max_green, q=[0.98]))],
+                               "red_high": [float(np.quantile(truth.max_red, q=[0.98]))],
                                "bg_low": [float(bg_thresholds["ratio_low"])],
                                "bg_high": [float(bg_thresholds["ratio_high"])],
                                "bg_mean": [np.nanmean(truth.mean_bg_ratio)],
@@ -198,9 +205,11 @@ def analyze_statistics(truth_csv):
                                "max_std": [float(np.nanmax(truth["std"]))],
                                "min_std_at_max_blue": [float(np.nanmin(truth["std_at_max_blue"]))],
                                "mean_std_at_max_blue": [float(np.nanmean(truth["std_at_max_blue"]))],
-                               "q1_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.01]))]})
+                               "q1_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.005]))],
+                               "q99_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.995]))]})
     print(thresholds)
     thresholds.astype(np.float64).to_csv(os.path.join(os.path.dirname(truth_csv), "thresholds.csv"))
+    #cluster_spectra(spectra_csv, 10)
 
 
 def get_indices(a, value, b=None):
@@ -289,7 +298,7 @@ def cluster_rgb_vectors(truth_csv, thresholds_csv, rgb_vectors_csv, num_clusters
     thresholds = pd.read_csv(thresholds_csv, index_col=0)
     # vectors n*9
     col_names = []
-    for i in [0, 1, 2, 3, 4, 5, 6]:
+    for i in [0, 1, 2, 3, 4]:
         col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
     vectors = np.vstack([truth[col] for col in col_names]).swapaxes(0, 1)
     # cluster with KMeans
@@ -328,6 +337,25 @@ def cluster_rgb_vectors(truth_csv, thresholds_csv, rgb_vectors_csv, num_clusters
     for i, idx in enumerate(col_names):
         rgb_vectors_pd[idx] = cluster_cores[:, i]
     rgb_vectors_pd.to_csv(rgb_vectors_csv)
+
+
+def cluster_spectra(spectra_csv, num_clusters):
+    spectra = pd.read_csv(spectra_csv)
+    vectors = np.vstack([spectra[col] for col in spectra.columns[1:]]).swapaxes(0, 1)
+    # cluster with KMeans
+    k_means = KMeans(n_clusters=n_clusters).fit(vectors)
+    # calculate mean of clusters
+    cluster_cores = np.zeros((num_clusters, vectors.shape[1]))
+    labels = k_means.labels_
+    for i, label in enumerate(np.unique(labels)):
+        label_match = np.where(labels == label)[0]
+        cluster_cores[i] = np.nanmean(vectors[label_match, :], axis=0)
+    spectra_cores = pd.DataFrame()
+    spectra_cores["B08"] = cluster_cores[:, 0]
+    spectra_cores["B02"] = cluster_cores[:, 1]
+    spectra_cores["B03"] = cluster_cores[:, 2]
+    spectra_cores["B04"] = cluster_cores[:, 3]
+    spectra_cores.to_csv(os.path.join(os.path.dirname(spectra_csv), "spectra_cores.csv"))
 
 
 def crop_2d_indices(indices):
@@ -412,10 +440,16 @@ if __name__ == "__main__":
     if not os.path.exists(dir_truth):
         os.mkdir(dir_truth)
     file_path_truth = os.path.join(dir_truth, "truth_analysis.csv")
+    file_path_spectra = os.path.join(dir_truth, "spectra.csv")
     if os.path.exists(file_path_truth) and overwrite_truth_csv:
         os.remove(file_path_truth)
+    if os.path.exists(file_path_spectra) and overwrite_truth_csv:
+        os.remove(file_path_spectra)
     if not os.path.exists(file_path_truth):
         create_truth_csv(file_path_truth)
+    if not os.path.exists(file_path_spectra):
+        spectra_pd = pd.DataFrame()
+        spectra_pd.to_csv(file_path_spectra)
     for tile in tiles:
         print(tile)
         imgs = np.array(glob.glob(dir_imgs + os.sep + "*" + tile + "*.tif"))
@@ -439,8 +473,8 @@ if __name__ == "__main__":
                                  driver="GPKG")
         # extract stats from training boxes
         boxes_training.index = range(len(boxes_training))
-        extract_statistics(img_file, boxes_training, file_path_truth)
-    analyze_statistics(file_path_truth)
+        extract_statistics(img_file, boxes_training, file_path_truth, file_path_spectra)
+    analyze_statistics(file_path_truth, file_path_spectra)
     cluster_rgb_vectors(file_path_truth, os.path.join(dir_truth, "thresholds.csv"),
                         os.path.join(dir_truth, "rgb_vector_clusters.csv"), n_clusters)
 
