@@ -15,7 +15,7 @@ from datetime import datetime
 
 from array_utils.math import normalized_ratio, rescale
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
-from osm.utils import get_roads, rasterize_osm
+from osm_utils.utils import get_roads, rasterize_osm
 from utils.ProgressBar import ProgressBar
 
 warnings.filterwarnings("ignore")
@@ -51,7 +51,7 @@ MAX_MAX_DIST_RED = THRESHOLDS["max_max_dist_red"][0]
 MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 4
 # SPECTRAL ANGLE
 #MIN_R_SQUARED = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
-MAX_SLOPE = (THRESHOLDS["max_slope"][0] + THRESHOLDS["std_slope"][0]) * 3
+MAX_SLOPE = THRESHOLDS["max_slope"][0] * 3
 MIN_SLOPE = THRESHOLDS["min_slope"][0]
 
 # Open Street Maps buffer
@@ -123,7 +123,9 @@ class Detector:
         band_stack_np *= osm_mask
         band_stack_np = band_stack_np[:, subset_box["ymin"]:subset_box["ymax"], subset_box["xmin"]:subset_box["xmax"]]
         low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
+        high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.99])  # mask out highest 1 % reflectances
         band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
+        band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
         self.lat = self.lat[subset_box["ymin"]:subset_box["ymax"]+1]
         self.lon = self.lon[subset_box["xmin"]:subset_box["xmax"]+1]
         band_stack_np_rescaled = band_stack_np.copy()
@@ -154,11 +156,13 @@ class Detector:
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
-        bn_ratio = normalized_ratio(b02, self.band_stack_np[3])  # ratio of B02 (blue) and B08 (near-infrared)
         bg, br = np.int8(bg_ratio > 0), np.int8(br_ratio > 0)  # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
-        bn = np.int8(bn_ratio > np.nanquantile(bn_ratio, [0.8]))  # np.nanmean(bn_ratio) + np.nanstd(bn_ratio)
         blue_min = np.int8(b02 > np.nanquantile(b02, [0.5]))  # exclude low 50 % blue
-        self.trucks_np = np.array(bg * br * blue_min * bn).astype(np.int8)
+        blue_max = np.int8(b02 < np.nanquantile(b02, [0.995]))
+        green_max = np.int8(b03 < np.nanquantile(b03, [0.9]))
+        red_max = np.int8(b04 < np.nanquantile(b04, [0.9]))
+        std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 > THRESHOLDS["q1_std_at_max_blue"])
+        self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
         bg_ratio, br_ratio, rgb_max = None, None, None
 
     def _context_zoom(self):
@@ -300,7 +304,7 @@ class Detector:
             except ValueError:
                 continue
             box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
-            if (np.nanmean(np.nanstd(box_arr, 0)) * 10) < MIN_RGB_STD:
+            if (np.nanmean(np.nanstd(box_arr, 0)) * 10) < MIN_RGB_STD * 0.5:  # be tolerant here
                 continue
             cluster_sub = spatial_cluster[a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             cluster_sub[np.isnan(box_arr[0])] = 0
@@ -320,7 +324,7 @@ class Detector:
             box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
             if all([box_arr.shape[1] <= 2, box_arr.shape[2] <= 2]):
                 continue
-            box_metrics["std"] = np.nanmax(np.nanstd(box_arr, 0)) * 10
+            box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
             box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"]
             if self._spatial_spectral_match(box_metrics):
                 boxes.append(a_box)
@@ -348,7 +352,7 @@ class Detector:
                 else:
                     a_box = subset_dict["selected_box"]
                     box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1]
-                    box_metrics["std"] = np.nanmax(np.nanstd(box_arr, 0)) * 10
+                    box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
                     box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"]
                     if not self._spatial_spectral_match(box_metrics):
                         return {}
@@ -422,12 +426,12 @@ class Detector:
         given_vector = np.hstack([sub_variables[4:6, blue_y, blue_x],  # stack of variables and target pixels
                                   sub_variables[2:4, green_y, green_x],
                                   sub_variables[0:2, red_y, red_x],
-                                  sub_variables[6:, blue_y, blue_x],
-                                  sub_variables[6:, green_y, green_x],
-                                  sub_variables[6:, red_y, red_x],
-                                  sub_variables[7:, blue_y, blue_x],
-                                  sub_variables[7:, green_y, green_x],
-                                  sub_variables[7:, red_y, red_x],
+                                  sub_variables[6, blue_y, blue_x],
+                                  sub_variables[6, green_y, green_x],
+                                  sub_variables[6, red_y, red_x],
+                                  sub_variables[7, blue_y, blue_x],
+                                  sub_variables[7, green_y, green_x],
+                                  sub_variables[7, red_y, red_x],
                                   sub_arr[2, blue_y, blue_x],
                                   sub_arr[2, green_y, green_x],
                                   sub_arr[2, red_y, red_x],
@@ -438,7 +442,7 @@ class Detector:
                                   sub_arr[0, blue_y, blue_x],
                                   sub_arr[0, green_y, green_x]])
         col_names, spectral_angles, slopes, spearman = [], [], [], []
-        for i in [0, 1, 2, 3, 4, 5, 6, 7]:
+        for i in range(7):
             col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
         # calculate spearmanr correlations between given variables and all reference variables
         for row in RGB_VECTORS.iterrows():
@@ -449,7 +453,7 @@ class Detector:
             #spectral_angles.append(regression.rvalue)
             slopes.append(regression.slope)
         # use mean of all spearmanr correlation coefficients as indicator for agreement with reference dataset
-        return_dict["spectral_angle"] = np.mean(spearman)  #np.nanquantile(spectral_angles, [0.75])[0] - np.nanstd(spectral_angles)
+        return_dict["spectral_angle"] = np.nanmean(spearman)  #np.nanquantile(spectral_angles, [0.75])[0] - np.nanstd(spectral_angles)
         return_dict["slope"] = np.nanmean(slopes)
         return_dict["direction"] = self.calc_vector_direction_in_degree(np.mean(np.vstack([blue_red_spatial_vector,
                                                                                            blue_green_spatial_vector]),
@@ -506,8 +510,12 @@ class Detector:
                         boxes_spatial_angle.append(box_metrics["spatial_angle"])
         combined = np.array(boxes_rsquared) + np.array(boxes_rgb_sums) - np.array(boxes_spatial_angle)
         try:
-            match = np.where(combined == np.max(combined))[0][0]
+            max_combined = np.max(combined)
         except ValueError:
+            return {}
+        try:
+            match = np.where(combined == max_combined)[0][0]
+        except IndexError:
             return {}
         new_box = boxes[match]
         selected_box[2] = selected_box[0] + new_box[2]
@@ -752,8 +760,12 @@ class Detector:
             is_match *= metrics_dict["std"] >= MIN_RGB_STD
         except KeyError:
             has_values -= 1
+  #      try:
+   #         is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+    #    except KeyError:
+     #       has_values -= 1
         try:
-            is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+            is_match *= metrics_dict["score"] >= self.min_score
         except KeyError:
             has_values -= 1
         try:
@@ -809,6 +821,16 @@ class Detector:
         low_quantile_mask[low_quantile_mask == 0] = np.nan
         low_quantile_mask[low_quantile_mask > 0] = 1
         return low_quantile_mask
+
+    @staticmethod
+    def calc_high_quantile_mask(reflectances, q):
+        high_quantile_red = np.int8(reflectances[0] < np.nanquantile(reflectances[0], q))
+        high_quantile_green = np.int8(reflectances[1] < np.nanquantile(reflectances[1], q))
+        high_quantile_blue = np.int8(reflectances[2] < np.nanquantile(reflectances[2], q))
+        high_quantile_mask = np.float32(high_quantile_red + high_quantile_green + high_quantile_blue)
+        high_quantile_mask[high_quantile_mask == 0] = np.nan
+        high_quantile_mask[high_quantile_mask > 0] = 1
+        return high_quantile_mask
 
     @staticmethod
     def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
