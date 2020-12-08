@@ -55,7 +55,7 @@ def get_osm(bbox,
                 try:
                     geoms.append(elem.geometry())
                 except Exception:
-                    print("Could not append geometry")
+                    continue
         Warning("Could not retrieve " + select)
     if len(geoms) > 0:
         lines = gpd.GeoDataFrame(crs="EPSG:4326", geometry=geoms)
