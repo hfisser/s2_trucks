@@ -298,7 +298,7 @@ def cluster_rgb_vectors(truth_csv, thresholds_csv, rgb_vectors_csv, num_clusters
     thresholds = pd.read_csv(thresholds_csv, index_col=0)
     # vectors n*9
     col_names = []
-    for i in [0, 1, 2, 3, 4]:
+    for i in range(7):
         col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
     vectors = np.vstack([truth[col] for col in col_names]).swapaxes(0, 1)
     # cluster with KMeans
