@@ -28,10 +28,10 @@ COLUMN_KEYS = ["validation_percentage", "detection_percentage",
                "validation_intersection_percentage", "detection_intersection_percentage"]
 
 # parameters
-subset_box = {"ymin": 3000, "xmin": 1000, "ymax": 5000, "xmax": 3000}
-n_epochs, n_runs = 1, 5
+subset_box = {"ymin": 0, "xmin": 0, "ymax": 0, "xmax": 0}
+n_epochs, n_runs = 1, 8
 min_r_squared, max_r_squared = 0.5, 0.9
-min_score, max_score = 1., 1.6
+min_score, max_score = 0.72, 1.4
 step_ratios = 0.005
 min_ratios = -step_ratios
 max_ratios = min_ratios + step_ratios * 10
@@ -57,6 +57,8 @@ class TrainingLoop:
             print("Epoch: " + str(epoch) + "\n" + "*" * 50)
             accuracy_files = []
             for file_idx, file in enumerate(band_stack_files):
+                #if file != files[2]:
+                 #   continue
                 #file = "C:\\Users\\Lenovo\\Downloads\\test42.tif"
                 print("=" * 50)
                 print("Dataset: %s" % file_idx)
@@ -65,9 +67,9 @@ class TrainingLoop:
                 validation_filename = file_str + "_validation.gpkg"
                 accuracy_file = os.path.join(dir_training, file_str + "_accuracy_epoch%s_dataset%s.csv" % (epoch,
                                                                                                            file_idx))
-                if os.path.exists(accuracy_file):  # has already been processed
-                    accuracy_files.append(accuracy_file)
-                    continue
+            #    if os.path.exists(accuracy_file):  # has already been processed
+              #      accuracy_files.append(accuracy_file)
+             #       continue
                 with rio.open(file, "r") as src:
                     rio_meta = src.meta
                     band_stack = np.zeros((src.count, src.height, src.width), dtype=np.float32)
@@ -93,7 +95,7 @@ class TrainingLoop:
                     detector.min_score = curr_score
                     detections = detector.detect_trucks(band_stack_np)
                     try:
-                        detections.to_file(os.path.join(dir_training, file_str + "_detections_%s.gpkg" % curr_rsquared),
+                        detections.to_file(os.path.join(dir_training, file_str + "_detections_%s.gpkg" % curr_score),
                                            driver="GPKG")
                     except ValueError:
                         continue
