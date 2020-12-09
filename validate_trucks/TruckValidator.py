@@ -1,6 +1,7 @@
 import os
 import utm
 import requests
+import shutil
 import numpy as np
 import rasterio as rio
 import geopandas as gpd
@@ -11,6 +12,7 @@ from shapely.geometry import Point
 from shapely.geometry.linestring import LineString
 
 from osm_utils.utils import get_roads, rasterize_osm
+from vector_utils.geocoding import utm_to_4326
 from array_utils.points import raster_to_points
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
@@ -46,6 +48,9 @@ stations = {"Theeßen (3810)": ["2018-11-28", "2018-11-28"],
             "Crailsheim-Süd (8827)": ["2018-04-27", "2018-04-27"]}  # Bundesstraße
 
 
+stations = {list(stations.keys())[0]: list(stations.values())[0]}
+
+
 class Validator:
     def __init__(self, station_name, station_aois_file, dir_validation_home, dir_osm_data):
         aois = gpd.read_file(station_aois_file)
@@ -58,59 +63,83 @@ class Validator:
                 os.mkdir(directory)
         self.validation_file = os.path.join(self.dirs["validation"], "validation_run.csv")
         self.station_name = station_name
+        self.station_name_clear = self.station_name.split(" (")[0]
         self.station_meta = self.get_station_meta(station_name)
         bbox = aois[aois["Name"] == station_name].geometry.bounds
-        self.bbox_wgs84 = (bbox.miny[0], bbox.minx[0], bbox.maxy[0], bbox.maxx[0])  # min lat, min lon, max lat, max lon
+        self.bbox_epsg4326 = (bbox.miny[0], bbox.minx[0], bbox.maxy[0], bbox.maxx[0])  # min lat, min lon, max lat, max lon
         self.crs = aois.crs
         self.lat, self.lon = None, None
         self.detections, self.osm_roads = None, None
         self.date = None
-        self.detections_file, self.s2_data_file = None, None
+        self.detections_files, self.s2_data_file = [], None
 
     def detect(self, period):
         self.date = period[0]
-        band_names = ["B04", "B03", "B02", "CLM"]
-        resolution = 10
+        band_names, resolution, folder = ["B04", "B03", "B02", "B08", "CLM"], 10, ""
         dir_save_archive = os.path.join(self.dirs["s2"], "archive")
+        for directory in glob(os.path.join(os.path.dirname(dir_save_archive), "*")):  # keep this clean, only archive should be retained
+            if directory != dir_save_archive:
+                shutil.rmtree(directory)
         if not os.path.exists(dir_save_archive):
             os.mkdir(dir_save_archive)
-        self.s2_data_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s.tiff" % (self.station_name, period[0],
-                                                                                       period[1]))
-        if not os.path.exists(self.s2_data_file):
-            sh = SentinelHub()
-            sh.set_credentials(SH_CREDENTIALS_FILE)
-            band_stack, dir_data = sh.get_data(self.bbox_wgs84, period, DataCollection.SENTINEL2_L2A, band_names,
-                                               resolution, self.dirs["s2"])
-            files = glob(dir_data + os.sep + "*.tiff")
-            if len(files) > 1:
-                print("Several files, don't know which to read from %s" % self.dirs["s2"])
-                raise FileNotFoundError
-            else:
-                reflectance_file = copyfile(files[0], self.s2_data_file)
-        # read through rio in order to easily have metadata
-        try:
-            with rio.open(self.s2_data_file) as src:
-                meta = src.meta
-                band_stack_np = np.zeros((meta["width"], meta["height"], meta["n_bands"]))
-                for b in range(band_stack_np.shape[0]):
-                    band_stack_np[b] = src.read(b + 1)
-        except rio.errors.RasterioIOError as e:
-            raise e
-        # decrease size of reference lat, lon raster in order to calculate road distances on it
-        meta["width"], meta["height"] = int(meta["width"] / 50), int(meta["height"] / 50)
-        self.lat, self.lon = lat_from_meta(meta), lon_from_meta(meta)
-        band_stack_np = band_stack_np.swapaxes(0, 2)  # z, y, x
-        detector = Detector()
-        band_stack_np = detector.pre_process({"B08": band_stack_np[3], "B04": band_stack_np[0],
-                                              "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta, None)
-        # remove original band stack file that has been moved to archive yet
-        os.remove(files[0])
-        self.detections = detector.detect_trucks(band_stack_np)
-        self.detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
-                                            (self.date, self.station_name))
-        self.detections.to_file(self.detections_file)
+        sh = SentinelHub()
+        sh.set_credentials(SH_CREDENTIALS_FILE)
+        sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])  # diff. order
+        splitted_boxes = sh.split_box(sh_bbox, resolution)  # bbox may be too large, hence split (if too large)
+        for i, bbox in enumerate(splitted_boxes):
+            curr_s2_data_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_box%s.tiff" % (self.station_name_clear,
+                                                                                                 period[0],
+                                                                                                 period[1], i))
+            if not os.path.exists(curr_s2_data_file):
+                band_stack, dir_data = sh.get_data(bbox, period, DataCollection.SENTINEL2_L2A, band_names,
+                                                   resolution, self.dirs["s2"])
+                folders = glob(os.path.join(dir_data, "*"))
+                folders.remove(dir_save_archive)
+                if len(folders) > 1:
+                    print("Several files, don't know which to read from %s" % self.dirs["s2"])
+                    raise FileNotFoundError
+                else:
+                    folder = folders[0]
+                    reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
+            # read through rio in order to easily have metadata
+
+         #   curr_s2_data_file = "C:\\Users\\Lenovo\\Downloads\\aaaa.tif"
+
+            try:
+                with rio.open(curr_s2_data_file) as src:
+                    meta = src.meta
+                    band_stack_np = np.zeros((meta["height"], meta["width"], meta["count"]))
+                    for b in range(band_stack_np.shape[2]):
+                        band_stack_np[:, :, b] = src.read(b + 1)
+            except rio.errors.RasterioIOError as e:
+                raise e
+            band_stack_np = band_stack_np.swapaxes(0, 2).swapaxes(1, 2)  # z, y, x
+            detector = Detector()
+            detector.min_score = 4.5
+            # transform to EPSG:4326
+            t, epsg_4326 = meta["transform"], "EPSG:4326"
+            #sub = {"ymin": 800, "ymax": band_stack_np.shape[1], "xmin": 0, "xmax": band_stack_np.shape[2]}
+            band_stack_np = detector.pre_process({"B08": band_stack_np[3], "B04": band_stack_np[0],
+                                                  "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta)
+            # remove original band stack file that has been moved to archive yet
+            curr_detections = detector.detect_trucks(band_stack_np)
+            curr_detections_file = os.path.join(self.dirs["detections"], "test3_s2_detections_%s_%s_box%s.gpkg" %
+                                                (self.date, self.station_name_clear, i))
+            self.detections_files.append(curr_detections_file)
+            curr_detections.to_file(curr_detections_file, driver="GPKG")
+            # decrease size of reference lat, lon raster in order to calculate road distances on it
+            meta["width"], meta["height"] = int(meta["width"] / 50), int(meta["height"] / 50)
+            self.lat, self.lon = lat_from_meta(meta), lon_from_meta(meta)
+            detector, band_stack_np = None, None
+            shutil.rmtree(folder)  # remove original download file
 
     def validate(self):
+        # read all detection files (may be multiple due to box splitting)
+        all_detections = []
+        for detection_file in self.detections_files:
+            all_detections.append(gpd.read_file(detection_file))
+        self.detections = pd.concat(all_detections)
+        self.prepare_s2_counts()
         try:
             validation_pd = pd.read_csv(self.validation_file)
         except FileNotFoundError:
@@ -164,7 +193,7 @@ class Validator:
         station_counts_hour = station_counts[time_match]
         idx = len(validation_pd)
         for key, value in {"station_file": station_file, "s2_counts_file": self.s2_data_file,
-                           "detections_file": self.detections_file,
+                           "detections_file": self.detections_files,
                            "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach)}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
@@ -173,8 +202,8 @@ class Validator:
         validation_pd.to_csv(self.validation_file)
 
     def prepare_s2_counts(self):
-        osm_file = get_roads(list(self.bbox_wgs84), ["motorway", "trunk", "primary"], OSM_BUFFER,
-                             self.dirs["osm"], str(self.bbox_wgs84).replace(", ", "_")[1:-1].replace(".", "_")
+        osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], OSM_BUFFER,
+                             self.dirs["osm"], str(self.bbox_epsg4326).replace(", ", "_")[1:-1].replace(".", "_")
                              + "_osm_roads", str(self.crs))
         osm_roads = gpd.read_file(osm_file)
         # subset to road type of station
