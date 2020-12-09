@@ -38,8 +38,9 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv):
         box = boxes_gpd.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
-        sub_arr_copy = arr[0:4, y0:y1+1, x0:x1+1].copy()
-        sub_arr = rescale(sub_arr_copy.copy(), 0, 1)
+        sub_arr = arr[0:4, y0:y1+1, x0:x1+1].copy()
+        sub_arr_copy = sub_arr.copy()
+   #     sub_arr = rescale(sub_arr_copy.copy(), 0, 1)
         n_bands = sub_arr.shape[0] - 1
         ratios = np.zeros((n_bands * 2 + 2, sub_arr.shape[1], sub_arr.shape[2]))
         ratio_counterparts = [[1, 2], [0, 2], [0, 1]]
