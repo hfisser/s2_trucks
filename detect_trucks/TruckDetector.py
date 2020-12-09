@@ -250,7 +250,7 @@ class Detector:
         detection_y, detection_x = int(subset.shape[1] / 2), int(subset.shape[2] / 2)  # index of detection (center)
         detection_yx = [detection_y, detection_x]
         subset[np.isnan(subset)] = 0
-        subset = rescale(subset, 0, 1)
+       # subset = rescale(subset, 0, 1)
         detection_stack = subset[:, detection_y, detection_x].copy()
         subset *= np.int8(normalized_ratio(subset[3], subset[0]) <= MAX_NDVI)
         subset[subset == 0] = np.nan
@@ -299,7 +299,7 @@ class Detector:
         quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
         spatial_cluster = self._expose_cluster(quantiles_sum, subset[0:3], False)
         # if a cluster has high amount of values exclude corners, potentially divide large cluster
-        boxes, boxes_metrics, scores = [], [], []
+        boxes, boxes_metrics, scores, clusters = [], [], [], []
    #     print("Section 3 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         for cluster in np.unique(spatial_cluster[spatial_cluster != 0]):
@@ -315,12 +315,8 @@ class Detector:
             cluster_sub = spatial_cluster[a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             cluster_sub[np.isnan(box_arr[0])] = 0
             ys, xs = np.where(spatial_cluster == cluster)
-      #      try:
-       #         ys, xs = self.eliminate_outlier_indices(ys, xs)  # may produce error when indices empty
-        #    except ValueError:
-         #       continue
-          #  else:
-            ys, xs = np.hstack([ys, detection_y]), np.hstack([xs, detection_x])
+            if len(ys) < 3:
+                continue
             # subset to max ratio
             a_box = [np.min(ys), np.min(xs), np.max(ys), np.max(xs)]
             box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
@@ -335,10 +331,13 @@ class Detector:
             if all([box_arr.shape[1] <= 2, box_arr.shape[2] <= 2]):
                 continue
             box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
-            reflectance_means_sum = box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics["green_mean"]
-            ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"] + box_metrics["blue_ratio_max"]
-            box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (1 - box_metrics["slope"]) + reflectance_means_sum + ratio_means_sum
+            reflectance_means_sum = (box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics["green_mean"]) * 10
+            ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"]\
+                              + box_metrics["blue_ratio_max"]
+            box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (1 - box_metrics["slope"]) \
+                                   + reflectance_means_sum + ratio_means_sum
             if self._spatial_spectral_match(box_metrics):
+                clusters.append(cluster)
                 boxes.append(a_box)
                 boxes_metrics.append(box_metrics)
                 scores.append(box_metrics["score"])
@@ -364,8 +363,8 @@ class Detector:
                 else:
                     a_box = subset_dict["selected_box"]
                     box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1]
-                    reflectance_means_sum = box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics[
-                        "green_mean"]
+                    reflectance_means_sum = (box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics[
+                        "green_mean"]) * 10
                     ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"] + box_metrics[
                         "blue_ratio_max"]
                     box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
@@ -668,14 +667,14 @@ class Detector:
         is_match = True
         has_values = 7
         try:
-            ratios_means = [metrics_dict["red_mean"], metrics_dict["green_mean"], metrics_dict["blue_mean"]]
+            ratios_means = [metrics_dict["red_ratio_max"], metrics_dict["green_ratio_max"], metrics_dict["blue_ratio_max"]]
         except KeyError:
             has_values -= 1
         else:
             ratios_high = np.max(ratios_means) > 0.3
             ratios_high_all = all([mean_value > 0.1 for mean_value in ratios_means])
             ratios_high_all = ratios_high_all or sum([mean_value > 0.25 for mean_value in ratios_means]) >= 2
-            ratios_high_two = sum([mean_value > 0.25 for mean_value in ratios_means]) > 1
+            ratios_high_two = sum([mean_value > 0.15 for mean_value in ratios_means]) > 1
             is_match *= ratios_high * ratios_high_all * ratios_high_two
         try:
             is_match *= metrics_dict["std"] >= MIN_RGB_STD
@@ -710,6 +709,7 @@ class Detector:
             return False
         else:
             return is_match
+
     @staticmethod
     def calc_primary_accuracy(detected_boxes, validation_boxes):
         out_keys = ["validation_percentage", "detection_percentage", "validation_intersection_percentage",
