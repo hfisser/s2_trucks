@@ -35,9 +35,9 @@ MAX_GREEN_BOX = THRESHOLDS["box_mean_green_high"][0]
 MIN_BLUE = THRESHOLDS["blue_low"][0]
 MAX_BLUE = THRESHOLDS["blue_high"][0]
 MAX_BLUE_BOX = THRESHOLDS["box_mean_blue_high"][0]
-MIN_RGB_STD = THRESHOLDS["min_std"][0] - (THRESHOLDS["min_std"][0] / 5)
+MIN_RGB_STD = THRESHOLDS["min_std"][0]
 # VEGETATION
-MAX_NDVI = THRESHOLDS["ndvi_mean"][0] + THRESHOLDS["ndvi_std"][0] * 2
+MAX_NDVI = THRESHOLDS["ndvi_mean"][0] + THRESHOLDS["ndvi_std"][0]
 # RATIOS
 MIN_BLUE_RED_RATIO = 0
 MIN_BLUE_GREEN_RATIO = 0
@@ -48,11 +48,11 @@ MEAN_MAX_DIST_GREEN = THRESHOLDS["mean_max_dist_green"][0]
 MEAN_MAX_DIST_RED = THRESHOLDS["mean_max_dist_red"][0]
 MAX_MAX_DIST_GREEN = THRESHOLDS["max_max_dist_green"][0]
 MAX_MAX_DIST_RED = THRESHOLDS["max_max_dist_red"][0]
-MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 4
+MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 2
 # SPECTRAL ANGLE
 #MIN_R_SQUARED = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
-MAX_SLOPE = THRESHOLDS["max_slope"][0] * 3
-MIN_SLOPE = THRESHOLDS["min_slope"][0]
+MAX_SLOPE = 10
+MIN_SLOPE = 0.4
 
 # Open Street Maps buffer
 OSM_BUFFER = 30
@@ -81,14 +81,14 @@ class Detector:
         self.trucks_np = None
         self.crs = None
 
-    def pre_process(self, band_dict, metadata, subset_box):
+    def pre_process(self, band_dict, metadata, subset_box=None):
         """
         rescales data to 0-1 and calculates lat, lon coordinates, masks to OSM roads
         :param band_dict: dict holding 3 arrays with shape (height, width), keys are B02, B03, B04, B08
         :param metadata: dict metadata from rasterio IO
         :param subset_box: dict with int ymin, ymax, xmin, xmax
         """
-        default_r_squared = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
+        default_r_squared = 0.6
         self.min_r_squared = default_r_squared if self.min_r_squared is None else self.min_r_squared
         if not isinstance(band_dict, dict):
             raise TypeError("'band_dict' must be a dictionary")
@@ -99,35 +99,35 @@ class Detector:
         if not isinstance(metadata, dict):
             raise TypeError("'metadata' must be a dictionary")
         self.crs = metadata["crs"]
-        if "lat" in metadata.keys() and "lon" in metadata.keys():
-            self.lat, self.lon = metadata["lat"], metadata["lon"]
-        else:
-            try:
-                lat_lon = {"lat": lat_from_meta(metadata), "lon": lon_from_meta(metadata)}
-            except KeyError:
-                print("Either rasterio metadata must be provided or lat and lon arrays")
-            else:
-                self.lat, self.lon = lat_lon["lat"], lat_lon["lon"]
         try:
-            bbox_epsg4326 = metadata_to_bbox_epsg4326(metadata)
+            self.lat, self.lon = metadata["lat"], metadata["lon"]
         except KeyError:
-            bbox_epsg4326 = [np.min(lat_lon["lat"]), np.max(lat_lon["lon"]), np.max(lat_lon["lat"]), np.min(lat_lon["lon"])]
+            try:
+                self.lat, self.lon = lat_from_meta(metadata), lon_from_meta(metadata)
+            except KeyError as e:
+                raise e
+        box_utm = [np.min(self.lat), np.max(self.lon), np.max(self.lat), np.min(self.lon)]
+        box_epsg4326 = metadata_to_bbox_epsg4326(metadata)
         dir_ancil = os.path.join(HOME, "AUXILIARY")
         if not os.path.exists(dir_ancil):
             os.mkdir(dir_ancil)
-        osm_mask = self.get_osm_mask(bbox_epsg4326, metadata["crs"], band_dict["B02"],
+        box_epsg4326 = list(np.flip(box_epsg4326))
+        osm_mask = self.get_osm_mask(box_epsg4326, metadata["crs"], band_dict["B02"],
                                      {"lat": self.lat, "lon": self.lon},
                                      dir_ancil)
         band_stack_np = np.array([band_dict["B04"], band_dict["B03"], band_dict["B02"], band_dict["B08"]])
         band_stack_np[np.isnan(band_stack_np)] = 0.
         band_stack_np *= osm_mask
-        band_stack_np = band_stack_np[:, subset_box["ymin"]:subset_box["ymax"], subset_box["xmin"]:subset_box["xmax"]]
+        try:
+            band_stack_np = band_stack_np[:, subset_box["ymin"]:subset_box["ymax"], subset_box["xmin"]:subset_box["xmax"]]
+            self.lat = self.lat[subset_box["ymin"]:subset_box["ymax"] + 1]
+            self.lon = self.lon[subset_box["xmin"]:subset_box["xmax"] + 1]
+        except TypeError:  # subset_box is allowed to be None
+            pass
         low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
         high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.99])  # mask out highest 1 % reflectances
         band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
         band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
-        self.lat = self.lat[subset_box["ymin"]:subset_box["ymax"]+1]
-        self.lon = self.lon[subset_box["xmin"]:subset_box["xmax"]+1]
         band_stack_np_rescaled = band_stack_np.copy()
         band_stack_np = None
         band_stack_np_rescaled[np.isnan(band_stack_np_rescaled)] = 0
@@ -155,13 +155,16 @@ class Detector:
         Detect pixels of superior blue reflectance based on band ratios
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
+        self.band_stack_np = self.expose_anomalous_pixels(self.band_stack_np)
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
-        bg, br = np.int8(bg_ratio > 0), np.int8(br_ratio > 0)  # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
+        # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
+        bg = np.int8(bg_ratio > 0)
+        br = np.int8(br_ratio > 0)
         blue_min = np.int8(b02 > np.nanquantile(b02, [0.5]))  # exclude low 50 % blue
-        blue_max = np.int8(b02 < np.nanquantile(b02, [0.995]))
+        blue_max = np.int8(b02 < np.nanquantile(b02, [0.999]))
         green_max = np.int8(b03 < np.nanquantile(b03, [0.9]))
         red_max = np.int8(b04 < np.nanquantile(b04, [0.9]))
-        std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 > THRESHOLDS["q1_std_at_max_blue"])
+        std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 >= THRESHOLDS["q1_std_at_max_blue"][0])
         self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
         bg_ratio, br_ratio, rgb_max = None, None, None
 
@@ -171,7 +174,7 @@ class Detector:
         :return: GeoDataframe containing the detected boxes
         """
         valid = np.where(self.trucks_np == 1)  # y, x indices
-        boxes = [[], [], [], [], [], [], [], [], []]
+        boxes = [[], [], [], [], [], [], [], [], [], [], [], []]
         y_max, x_max = self.trucks_np.shape
         print("Context zoom\n%s" % (len(valid[0])))
         pb = ProgressBar(len(valid[0]), 50)
@@ -207,6 +210,8 @@ class Detector:
                 box_full_array[2] = self.lon.shape[0] - 1 if box_full_array[2] >= self.lon.shape[0] else box_full_array[2]
                 box_full_array[3] = self.lat.shape[0] - 1 if box_full_array[3] >= self.lat.shape[0] else box_full_array[3]
                 ymax, xmax = box_full_array[3] + 1, box_full_array[2] + 1
+                ymax = self.lat.shape[0] - 1 if ymax >= self.lat.shape[0] else ymax  # may happen
+                xmax = self.lon.shape[0] - 1 if xmax >= self.lon.shape[0] else xmax
                 bounding_box = box(self.lon[box_full_array[0]],
                                    self.lat[box_full_array[1]],
                                    self.lon[xmax],
@@ -215,7 +220,7 @@ class Detector:
                 values = [bounding_box, box_metrics["spectral_angle"], box_metrics["slope"],
                           self.direction_degree_to_description(direction_degree), direction_degree,
                           box_test_result["quantile"], box_test_result["speed"], box_metrics["score"],
-                          box_metrics["std"]]
+                          box_metrics["std"], box_metrics["red_mean"], box_metrics["green_mean"], box_metrics["blue_mean"]]
                 for idx, value in enumerate(values):
                     boxes[idx].append(value)
         detections = gpd.GeoDataFrame({"rsquared": boxes[1],
@@ -225,7 +230,10 @@ class Detector:
                                        "localization_quantile": boxes[5],
                                        "speed": boxes[6],
                                        "score": boxes[7],
-                                       "std": boxes[8]},
+                                       "std": boxes[8],
+                                       "red_ratio": boxes[9],
+                                       "green_ratio": boxes[10],
+                                       "blue_ratio": boxes[11]},
                                       geometry=boxes[0],
                                       crs=self.crs)
         print("\nNumber of detections: %s" % (len(detections)))
@@ -237,6 +245,7 @@ class Detector:
         :param subset: numpy ndarray of shape (4, 9, 9) containing the reflectances of subset
         :return: dict with resulting detection box and its metrics
         """
+        subset_copy = subset.copy()
         t0 = datetime.now()
         detection_y, detection_x = int(subset.shape[1] / 2), int(subset.shape[2] / 2)  # index of detection (center)
         detection_yx = [detection_y, detection_x]
@@ -259,18 +268,18 @@ class Detector:
         q = np.float32([0.99])
        # print("Section 1 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
-        quantiles_sum_dummy = np.float32([1, 1])
-        quantiles_sum = quantiles_sum_dummy.copy()
-        while np.count_nonzero(quantiles_sum) < 8 and q[0] > 0.7:
+        qantiles_dummy = np.float32([1, 1])
+        quantiles_sum = qantiles_dummy.copy()
+        while np.count_nonzero(quantiles_sum) < 15 and q[0] > 0.7:
             quantiles_sum = self.quantile_filter(ratios, q)
             if quantiles_sum is None:
-                quantiles_sum = quantiles_sum_dummy.copy()
+                quantiles_sum = qantiles_dummy.copy()
             q -= 0.01
         q += 0.01
      #   print("Section 2 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         try:
-            s = all(quantiles_sum == quantiles_sum_dummy)
+            s = all(quantiles_sum == qantiles_dummy)
         except TypeError:  # then it's alright
             pass
         else:
@@ -279,6 +288,7 @@ class Detector:
             quantiles_sum[quantiles_sum > 0] = 1
         except TypeError:
             return {}
+     #   quantiles_sum = self.eliminate_single_nonzeros(quantiles_sum)
         if np.count_nonzero(quantiles_sum > 0) < 3:
             return {}
         for j, k, t in zip([0, 2, 4], [1, 3, 5], [MAX_MAX_DIST_RED + 1, MAX_MAX_DIST_GREEN + 1, 2]):
@@ -289,10 +299,6 @@ class Detector:
         quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
         spatial_cluster = self._expose_cluster(quantiles_sum, subset[0:3], False)
         # if a cluster has high amount of values exclude corners, potentially divide large cluster
-       # exclude_corners = False
-        #for cluster in np.unique(spatial_cluster[spatial_cluster != 0]):
-         #   exclude_corners += np.count_nonzero(spatial_cluster == cluster) > MAX_MAX_DIST_RED * 2
-        #spatial_cluster = self._expose_cluster(spatial_cluster, subset[0:3], exclude_corners)
         boxes, boxes_metrics, scores = [], [], []
    #     print("Section 3 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
@@ -309,13 +315,17 @@ class Detector:
             cluster_sub = spatial_cluster[a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             cluster_sub[np.isnan(box_arr[0])] = 0
             ys, xs = np.where(spatial_cluster == cluster)
-            try:
-                ys, xs = self.eliminate_outlier_indices(ys, xs)  # may produce error when indices empty
-            except ValueError:
-                continue
+      #      try:
+       #         ys, xs = self.eliminate_outlier_indices(ys, xs)  # may produce error when indices empty
+        #    except ValueError:
+         #       continue
+          #  else:
+            ys, xs = np.hstack([ys, detection_y]), np.hstack([xs, detection_x])
             # subset to max ratio
             a_box = [np.min(ys), np.min(xs), np.max(ys), np.max(xs)]
             box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
+            if np.count_nonzero(~np.isnan(box_arr)) / 3 / (box_arr.shape[1] * box_arr.shape[2]) < 0.3:  # too few pixels
+                continue
             box_ratios = ratios[:, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             t0b = datetime.now()
             box_metrics = self._characterize_spatial_spectral(box_arr, box_ratios)
@@ -325,7 +335,9 @@ class Detector:
             if all([box_arr.shape[1] <= 2, box_arr.shape[2] <= 2]):
                 continue
             box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
-            box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"]
+            reflectance_means_sum = box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics["green_mean"]
+            ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"] + box_metrics["blue_ratio_max"]
+            box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (1 - box_metrics["slope"]) + reflectance_means_sum + ratio_means_sum
             if self._spatial_spectral_match(box_metrics):
                 boxes.append(a_box)
                 boxes_metrics.append(box_metrics)
@@ -352,8 +364,13 @@ class Detector:
                 else:
                     a_box = subset_dict["selected_box"]
                     box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1]
+                    reflectance_means_sum = box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics[
+                        "green_mean"]
+                    ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"] + box_metrics[
+                        "blue_ratio_max"]
                     box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
-                    box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"]
+                    box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (
+                                1 - box_metrics["slope"]) + reflectance_means_sum + ratio_means_sum
                     if not self._spatial_spectral_match(box_metrics):
                         return {}
         box_too_small = all([(selected_box[2] - selected_box[0] + 1) <= 2, (selected_box[3] - selected_box[1] + 1) <= 2])
@@ -378,7 +395,7 @@ class Detector:
         """
         return_dict = {}
         keys = ["spectral_angle", "spatial_angle", "slope", "red_length", "green_length", "direction",
-                "blue_mean", "green_mean", "red_mean"]
+                "blue_mean", "green_mean", "red_mean", "red_ratio_max", "green_ratio_max", "blue_ratio_max"]
         for key in keys:
             return_dict[key] = np.nan
         return_dict_copy = return_dict.copy()
@@ -391,29 +408,28 @@ class Detector:
             except ValueError:
                 return return_dict
             else:
-                green_ratios[blue_y, blue_x] = 0  # set 0 in order to avoid double target
+                green_ratios[blue_y, blue_x] = np.nan  # set to nan in order to avoid double target
                 green_y, green_x = self.crop_2d_indices(np.where(green_ratios == np.nanmax(green_ratios)))
-                red_ratios[blue_y, blue_x] = 0  # avoid double target
-                red_ratios[green_y, green_x] = 0  # ""
+                red_ratios[blue_y, blue_x] = np.nan  # avoid double target
+                red_ratios[green_y, green_x] = np.nan  # ""
                 red_y, red_x = self.crop_2d_indices(np.where(red_ratios == np.nanmax(red_ratios)))
         except IndexError:
             return return_dict
         # calculate spatial distances from blue and eliminate blue if not fitting, try again
-        green_length, red_length = 1, 0
-        for y, x in zip([red_y, green_y], [red_x, green_x]):
-            blue_ratios[y, x] = np.nan
-        green_further_away = green_length > red_length
+#        green_length, red_length = 1, 0
+ #       for y, x in zip([red_y, green_y], [red_x, green_x]):
+  #          blue_ratios[y, x] = np.nan
         # if index of max green ratios is further away from blue than red try to find a better suitable combination
-        while green_further_away and np.count_nonzero(~np.isnan(blue_ratios)) > 0:
-            red_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [red_y, red_x]))
-            green_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [green_y, green_x]))
-            green_further_away = green_length > red_length
-            if green_further_away:
-                blue_ratios[blue_y, blue_x] = np.nan
-                try:
-                    blue_y, blue_x = self.crop_2d_indices(np.where(blue_ratios == np.nanmax(blue_ratios)))
-                except IndexError:
-                    return return_dict
+     #   while green_further_away and np.count_nonzero(~np.isnan(blue_ratios)) > 0:
+      #      red_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [red_y, red_x]))
+       #     green_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [green_y, green_x]))
+        #    green_further_away = green_length > red_length
+         #   if green_further_away:
+          #      blue_ratios[blue_y, blue_x] = np.nan
+           #     try:
+            #        blue_y, blue_x = self.crop_2d_indices(np.where(blue_ratios == np.nanmax(blue_ratios)))
+             #   except IndexError:
+               #     return return_dict
         blue_indices = [blue_y, blue_x]
         blue_red_spatial_vector = self.calc_vector([red_y, red_x], blue_indices)  # spatial vector blue to red
         blue_green_spatial_vector = self.calc_vector([green_y, green_x], blue_indices)  # spatial vector blue to green
@@ -431,18 +447,18 @@ class Detector:
                                   sub_variables[6, red_y, red_x],
                                   sub_variables[7, blue_y, blue_x],
                                   sub_variables[7, green_y, green_x],
-                                  sub_variables[7, red_y, red_x],
-                                  sub_arr[2, blue_y, blue_x],
-                                  sub_arr[2, green_y, green_x],
-                                  sub_arr[2, red_y, red_x],
-                                  sub_arr[1, green_y, green_x],
-                                  sub_arr[1, blue_y, blue_x],
-                                  sub_arr[1, red_y, red_x],
-                                  sub_arr[0, red_y, red_x],
-                                  sub_arr[0, blue_y, blue_x],
-                                  sub_arr[0, green_y, green_x]])
+                                  sub_variables[7, red_y, red_x]]) #,
+                           #       sub_arr[2, blue_y, blue_x],
+                            #      sub_arr[2, green_y, green_x],
+                             #     sub_arr[2, red_y, red_x],
+                              #    sub_arr[1, green_y, green_x],
+                               #   sub_arr[1, blue_y, blue_x],
+                                #  sub_arr[1, red_y, red_x],
+                                 # sub_arr[0, red_y, red_x],
+                                  #sub_arr[0, blue_y, blue_x],
+                                  #sub_arr[0, green_y, green_x]])
         col_names, spectral_angles, slopes, spearman = [], [], [], []
-        for i in range(7):
+        for i in range(4):
             col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
         # calculate spearmanr correlations between given variables and all reference variables
         for row in RGB_VECTORS.iterrows():
@@ -458,9 +474,12 @@ class Detector:
         return_dict["direction"] = self.calc_vector_direction_in_degree(np.mean(np.vstack([blue_red_spatial_vector,
                                                                                            blue_green_spatial_vector]),
                                                                                 axis=0))
-        return_dict["red_mean"] = np.nanmean(sub_arr[0])  # not really needed
+        return_dict["red_mean"] = np.nanmean(sub_arr[0])
         return_dict["green_mean"] = np.nanmean(sub_arr[1])
         return_dict["blue_mean"] = np.nanmean(sub_arr[2])
+        return_dict["red_ratio_max"] = np.nanmax(np.nanmax(sub_variables[0:2]))
+        return_dict["green_ratio_max"] = np.nanmax(np.nanmax(sub_variables[2:4]))
+        return_dict["blue_ratio_max"] = np.nanmax(np.nanmax(sub_variables[4:6]))
         return return_dict
 
     def _subset_by_ratios(self, ratios, selected_box):
@@ -567,7 +586,6 @@ class Detector:
         return clusters
 
     def _crop_box(self, given_box, ratios, direction, detection_yx):
-        b = given_box.copy()
         max_size = MAX_MAX_DIST_RED * 2
         box_size = (given_box[2] - given_box[0] + 1) * (given_box[3] - given_box[1] + 1)
         direction_match = any(np.abs([x - direction for x in [0, 90, 180, 270]]) < 45)
@@ -633,6 +651,65 @@ class Detector:
         arr_modified[point[0], point[1]] = value
         return arr_modified, yet_seen
 
+    def calc_speed(self, ratios):
+        resolution = 10  # meters
+        blue_ratios = np.nansum(ratios[4:6], 0)
+        red_ratios = np.nansum(ratios[0:2], 0)
+        green_ratios = np.nansum(ratios[2:4], 0)
+        try:
+            max_blue, max_red, max_green = np.nanmax(blue_ratios), np.nanmax(red_ratios), np.nanmax(green_ratios)
+        except IndexError:
+            return 0
+        diameter = (np.max(ratios.shape[1:3]) - (1.5 - max_blue)) * resolution
+        kilometers_hour = (diameter * (3600 / SECONDS_OFFSET_B02_B04)) / 1000
+        return kilometers_hour
+
+    def _spatial_spectral_match(self, metrics_dict):
+        is_match = True
+        has_values = 7
+        try:
+            ratios_means = [metrics_dict["red_mean"], metrics_dict["green_mean"], metrics_dict["blue_mean"]]
+        except KeyError:
+            has_values -= 1
+        else:
+            ratios_high = np.max(ratios_means) > 0.3
+            ratios_high_all = all([mean_value > 0.1 for mean_value in ratios_means])
+            ratios_high_all = ratios_high_all or sum([mean_value > 0.25 for mean_value in ratios_means]) >= 2
+            ratios_high_two = sum([mean_value > 0.25 for mean_value in ratios_means]) > 1
+            is_match *= ratios_high * ratios_high_all * ratios_high_two
+        try:
+            is_match *= metrics_dict["std"] >= MIN_RGB_STD
+        except KeyError:
+            has_values -= 1
+        try:
+            is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+        except KeyError:
+            has_values -= 1
+        try:
+            is_match *= metrics_dict["score"] >= self.min_score
+        except KeyError:
+            has_values -= 1
+        try:
+            green_length = metrics_dict["green_length"]
+            red_length = metrics_dict["red_length"]
+            is_match *= green_length < red_length
+            is_match *= red_length < (MAX_MAX_DIST_RED + 0.5)
+            is_match *= green_length < (MAX_MAX_DIST_GREEN + 0.5)
+        except KeyError:
+            has_values -= 1
+        try:
+            is_match *= metrics_dict["slope"] < MAX_SLOPE
+            is_match *= metrics_dict["slope"] > MIN_SLOPE
+        except KeyError:
+            has_values -= 1
+        try:
+            is_match *= metrics_dict["spatial_angle"] < MAX_ANGLE_BR_BG
+        except KeyError:
+            has_values -= 1
+        if has_values == 0:
+            return False
+        else:
+            return is_match
     @staticmethod
     def calc_primary_accuracy(detected_boxes, validation_boxes):
         out_keys = ["validation_percentage", "detection_percentage", "validation_intersection_percentage",
@@ -718,7 +795,7 @@ class Detector:
             return None
         shape = quantiles.shape
         s = shape[1]
-        buffers = [2, 2, 1, 1, 2, 2, s, s, s]
+        buffers = [2, 2, 1, 1, 2, 2, s, s, s, s]
         for i in range(quantiles.shape[0]):
             for y in range(shape[1]):
                 for x in range(shape[2]):
@@ -739,56 +816,6 @@ class Detector:
                     sums = [np.nansum(quantiles_sub[j]) for j in range(quantiles_sub.shape[0])]
                     quantiles[i, y, x] = 0 if np.count_nonzero(sums) < 2 else original_value
         return quantiles.sum(0)
-
-    def calc_speed(self, ratios):
-        resolution = 10  # meters
-        blue_ratios = np.nansum(ratios[4:6], 0)
-        red_ratios = np.nansum(ratios[0:2], 0)
-        green_ratios = np.nansum(ratios[2:4], 0)
-        try:
-            max_blue, max_red, max_green = np.nanmax(blue_ratios), np.nanmax(red_ratios), np.nanmax(green_ratios)
-        except IndexError:
-            return 0
-        diameter = (np.max(ratios.shape[1:3]) - (1.5 - max_blue)) * resolution
-        kilometers_hour = (diameter * (3600 / SECONDS_OFFSET_B02_B04)) / 1000
-        return kilometers_hour
-
-    def _spatial_spectral_match(self, metrics_dict):
-        is_match = True
-        has_values = 5
-        try:
-            is_match *= metrics_dict["std"] >= MIN_RGB_STD
-        except KeyError:
-            has_values -= 1
-  #      try:
-   #         is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
-    #    except KeyError:
-     #       has_values -= 1
-        try:
-            is_match *= metrics_dict["score"] >= self.min_score
-        except KeyError:
-            has_values -= 1
-        try:
-            green_length = metrics_dict["green_length"]
-            red_length = metrics_dict["red_length"]
-            is_match *= green_length <= red_length
-            is_match *= red_length < (MAX_MAX_DIST_RED + 0.5)
-            is_match *= green_length < (MAX_MAX_DIST_GREEN + 0.5)
-        except KeyError:
-            has_values -= 1
-        try:
-            is_match *= metrics_dict["slope"] < MAX_SLOPE
-            is_match *= metrics_dict["slope"] > MIN_SLOPE
-        except KeyError:
-            has_values -= 1
-        try:
-            is_match *= metrics_dict["spatial_angle"] < MAX_ANGLE_BR_BG
-        except KeyError:
-            has_values -= 1
-        if has_values == 0:
-            return False
-        else:
-            return is_match
 
     @staticmethod
     def box_too_large(the_box, max_size):
@@ -833,6 +860,29 @@ class Detector:
         return high_quantile_mask
 
     @staticmethod
+    def expose_anomalous_pixels(band_stack_np):
+        w = 25
+        y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
+        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]))
+        for y in range(int(np.round(y_bound / w))):
+            for x in range(int(np.round(x_bound / w))):
+                y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
+                y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
+                y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
+                y_size, x_size = (y_up - y_low), (x_up - x_low)
+                n = y_size * x_size
+                subset = band_stack_np[:, y_low:y_up, x_low:x_up]
+                roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
+                roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
+                roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
+        diff_ratios = band_stack_np - np.nanmean(roads, 0)
+        span = ((np.nanmax(diff_ratios, 0) - np.nanmin(diff_ratios, 0)) * 10) ** 5
+        mask = np.int8(span > np.nanmedian(span))
+        bands_masked = band_stack_np * mask
+        bands_masked[bands_masked == 0] = np.nan
+        return bands_masked
+
+    @staticmethod
     def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
         osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
                              dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs))
@@ -857,7 +907,7 @@ class Detector:
         # [-1,1] -> 135°
         # [-1,-1] -> 225°
         # [1,-1] -> 315°
-        y_offset = 90 if vector[0] < 0 else 0
+        y_offset = 90 if vector[0] > 0 else 0
         x_offset = 90 if vector[1] < 0 else 0
         offset = 180 if y_offset == 0 and x_offset == 90 else 0
         if vector[0] == 0:
