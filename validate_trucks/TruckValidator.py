@@ -55,7 +55,7 @@ class Validator:
     def __init__(self, station_name, station_aois_file, dir_validation_home, dir_osm_data):
         aois = gpd.read_file(station_aois_file)
         self.dirs = {"validation": dir_validation_home, "osm": dir_osm_data,
-                     "station_counts": os.path.join(dir_validation, "data", "BAST", "station_counts"),
+                     "station_counts": os.path.join(dir_validation_home, "data", "BAST", "station_counts"),
                      "s2": os.path.join(dir_validation_home, "data", "s2"),
                      "detections": os.path.join(dir_validation, "detections")}
         for directory in self.dirs.values():
@@ -102,9 +102,6 @@ class Validator:
                     folder = folders[0]
                     reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
             # read through rio in order to easily have metadata
-
-         #   curr_s2_data_file = "C:\\Users\\Lenovo\\Downloads\\aaaa.tif"
-
             try:
                 with rio.open(curr_s2_data_file) as src:
                     meta = src.meta
@@ -115,7 +112,7 @@ class Validator:
                 raise e
             band_stack_np = band_stack_np.swapaxes(0, 2).swapaxes(1, 2)  # z, y, x
             detector = Detector()
-            detector.min_score = 4.5
+            detector.min_score = 2
             # transform to EPSG:4326
             t, epsg_4326 = meta["transform"], "EPSG:4326"
             #sub = {"ymin": 800, "ymax": band_stack_np.shape[1], "xmin": 0, "xmax": band_stack_np.shape[2]}
@@ -123,7 +120,7 @@ class Validator:
                                                   "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta)
             # remove original band stack file that has been moved to archive yet
             curr_detections = detector.detect_trucks(band_stack_np)
-            curr_detections_file = os.path.join(self.dirs["detections"], "test3_s2_detections_%s_%s_box%s.gpkg" %
+            curr_detections_file = os.path.join(self.dirs["detections"], "test4_s2_detections_%s_%s_box%s.gpkg" %
                                                 (self.date, self.station_name_clear, i))
             self.detections_files.append(curr_detections_file)
             curr_detections.to_file(curr_detections_file, driver="GPKG")
