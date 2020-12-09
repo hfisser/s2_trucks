@@ -13,7 +13,7 @@ from OSMPythonTools.overpass import overpassQueryBuilder, Overpass
 
 
 def buffer_bbox(bbox_osm):
-    offset = 0.05  # add a buffer to bbox in order to be sure cube is entirely covered
+    offset = 0.25  # add a buffer to bbox in order to be sure array is entirely covered
     bbox_osm[0] -= offset  # min lat
     bbox_osm[1] -= offset  # min lon
     bbox_osm[2] += offset  # max lat
@@ -33,7 +33,7 @@ def get_osm(bbox,
     element_type = ["way", "relation"]
     bbox_osm = buffer_bbox(bbox)
     quot = '"'
-    select = quot + osm_key + quot + '=' + quot + osm_value + quot
+    select = quot + osm_key + quot + "=" + quot + osm_value + quot
     select_link = select.replace(osm_value, osm_value + "_link")  # also get road links
     select_junction = select.replace(osm_value, osm_value + "_junction")
     geoms = []
@@ -41,7 +41,7 @@ def get_osm(bbox,
         query = overpassQueryBuilder(bbox=bbox_osm,
                                      elementType=element_type,
                                      selector=selector,
-                                     out='body',
+                                     out="body",
                                      includeGeometry=True)
         try:
             elements = Overpass().query(query, timeout=120).elements()
