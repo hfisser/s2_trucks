@@ -240,7 +240,7 @@ def calc_red_thresholds(maximum_red):
 
 
 def calc_ratio_thresholds(max_ratio):
-    return {"ratio_low": np.nanquantile(max_ratio, [0.06]),
+    return {"ratio_low": np.nanquantile(max_ratio, [0.01]),
             "ratio_high": np.nanquantile(max_ratio, [0.97])}
 
 
