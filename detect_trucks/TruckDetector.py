@@ -37,7 +37,7 @@ MAX_BLUE = THRESHOLDS["blue_high"][0]
 MAX_BLUE_BOX = THRESHOLDS["box_mean_blue_high"][0]
 MIN_RGB_STD = THRESHOLDS["min_std"][0]
 # VEGETATION
-MAX_NDVI = THRESHOLDS["ndvi_mean"][0] + THRESHOLDS["ndvi_std"][0]
+MAX_NDVI = THRESHOLDS["ndvi_mean"][0] + THRESHOLDS["ndvi_std"][0] * 3
 # RATIOS
 MIN_BLUE_RED_RATIO = 0
 MIN_BLUE_GREEN_RATIO = 0
@@ -48,11 +48,11 @@ MEAN_MAX_DIST_GREEN = THRESHOLDS["mean_max_dist_green"][0]
 MEAN_MAX_DIST_RED = THRESHOLDS["mean_max_dist_red"][0]
 MAX_MAX_DIST_GREEN = THRESHOLDS["max_max_dist_green"][0]
 MAX_MAX_DIST_RED = THRESHOLDS["max_max_dist_red"][0]
-MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 2
+MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 3
 # SPECTRAL ANGLE
 #MIN_R_SQUARED = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
 MAX_SLOPE = 10
-MIN_SLOPE = 0.4
+MIN_SLOPE = 0.2
 
 # Open Street Maps buffer
 OSM_BUFFER = 30
@@ -88,7 +88,7 @@ class Detector:
         :param metadata: dict metadata from rasterio IO
         :param subset_box: dict with int ymin, ymax, xmin, xmax
         """
-        default_r_squared = 0.6
+        default_r_squared = 0.5
         self.min_r_squared = default_r_squared if self.min_r_squared is None else self.min_r_squared
         if not isinstance(band_dict, dict):
             raise TypeError("'band_dict' must be a dictionary")
@@ -155,18 +155,22 @@ class Detector:
         Detect pixels of superior blue reflectance based on band ratios
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
-        self.band_stack_np = self.expose_anomalous_pixels(self.band_stack_np)
+        min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.5]), np.nanquantile(b02, [0.999])
+        max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.9]), np.nanquantile(b04, [0.9])
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
+        bg = np.int8(bg_ratio > (-np.nanmean(b02) - np.nanmean(b03)))
+        br = np.int8(br_ratio > (-np.nanmean(b02) - np.nanmean(b04)))
+        blue_min = np.int8(b02 > min_quantile_blue)  # exclude low 50 % blue
+        blue_max = np.int8(b02 < max_quantile_blue)
+  #      green_max = np.int8(b03 < max_quantile_green)
+   #     red_max = np.int8(b04 < max_quantile_red)
+        ndvi_max = np.int8(normalized_ratio(self.band_stack_np[3], b04) < MAX_NDVI)
+        self.band_stack_np = self.expose_anomalous_pixels(self.band_stack_np)
         # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
-        bg = np.int8(bg_ratio > 0)
-        br = np.int8(br_ratio > 0)
-        blue_min = np.int8(b02 > np.nanquantile(b02, [0.5]))  # exclude low 50 % blue
-        blue_max = np.int8(b02 < np.nanquantile(b02, [0.999]))
-        green_max = np.int8(b03 < np.nanquantile(b03, [0.9]))
-        red_max = np.int8(b04 < np.nanquantile(b04, [0.9]))
         std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 >= THRESHOLDS["q1_std_at_max_blue"][0])
-        self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
-        bg_ratio, br_ratio, rgb_max = None, None, None
+      #  self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
+        self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * ndvi_max)
+        bg_ratio, br_ratio, blue_min, blue_max, green_max, red_max, std_min = None, None, None, None, None, None, None
 
     def _context_zoom(self):
         """
@@ -249,12 +253,14 @@ class Detector:
         t0 = datetime.now()
         detection_y, detection_x = int(subset.shape[1] / 2), int(subset.shape[2] / 2)  # index of detection (center)
         detection_yx = [detection_y, detection_x]
-        subset[np.isnan(subset)] = 0
+       # subset[np.isnan(subset)] = 0
        # subset = rescale(subset, 0, 1)
         detection_stack = subset[:, detection_y, detection_x].copy()
-        subset *= np.int8(normalized_ratio(subset[3], subset[0]) <= MAX_NDVI)
-        subset[subset == 0] = np.nan
+     #   subset *= np.int8(normalized_ratio(subset[3], subset[0]) <= MAX_NDVI)
+      #  subset[subset == 0] = np.nan
         subset[:, detection_y, detection_x] = detection_stack.copy()
+        if np.count_nonzero(~np.isnan(subset[0])) < 3:
+            return {}
         n_bands = subset.shape[0] - 1
         ratios = np.zeros((n_bands * 2 + 2, subset.shape[1], subset.shape[2]))
         ratio_counterparts = [[1, 2], [0, 2], [0, 1]]
@@ -270,7 +276,7 @@ class Detector:
         t0 = datetime.now()
         qantiles_dummy = np.float32([1, 1])
         quantiles_sum = qantiles_dummy.copy()
-        while np.count_nonzero(quantiles_sum) < 15 and q[0] > 0.7:
+        while np.count_nonzero(quantiles_sum) < 10 and q[0] > 0.1:
             quantiles_sum = self.quantile_filter(ratios, q)
             if quantiles_sum is None:
                 quantiles_sum = qantiles_dummy.copy()
@@ -296,7 +302,7 @@ class Detector:
                                                                            quantiles_sum, detection_yx, t, q)
         # apply cluster exposing method twice in order to account for changes introduced by filter
         y_low, x_low, y_up, x_up = detection_y - 1, detection_x - 1, detection_y + 2, detection_x + 2
-        quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
+  #      quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
         spatial_cluster = self._expose_cluster(quantiles_sum, subset[0:3], False)
         # if a cluster has high amount of values exclude corners, potentially divide large cluster
         boxes, boxes_metrics, scores, clusters = [], [], [], []
@@ -309,15 +315,14 @@ class Detector:
                 a_box = [np.min(ys), np.min(xs), np.max(ys), np.max(xs)]
             except ValueError:
                 continue
-            box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
+            box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             if (np.nanmean(np.nanstd(box_arr, 0)) * 10) < MIN_RGB_STD * 0.5:  # be tolerant here
                 continue
             cluster_sub = spatial_cluster[a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             cluster_sub[np.isnan(box_arr[0])] = 0
             ys, xs = np.where(spatial_cluster == cluster)
-            if len(ys) < 3:
+            if len(ys) < 2:
                 continue
-            # subset to max ratio
             a_box = [np.min(ys), np.min(xs), np.max(ys), np.max(xs)]
             box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             if np.count_nonzero(~np.isnan(box_arr)) / 3 / (box_arr.shape[1] * box_arr.shape[2]) < 0.3:  # too few pixels
@@ -330,12 +335,7 @@ class Detector:
             box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
             if all([box_arr.shape[1] <= 2, box_arr.shape[2] <= 2]):
                 continue
-            box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
-            reflectance_means_sum = (box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics["green_mean"]) * 10
-            ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"]\
-                              + box_metrics["blue_ratio_max"]
-            box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (1 - box_metrics["slope"]) \
-                                   + reflectance_means_sum + ratio_means_sum
+            box_metrics = self.calc_score(box_metrics, box_arr)
             if self._spatial_spectral_match(box_metrics):
                 clusters.append(cluster)
                 boxes.append(a_box)
@@ -363,13 +363,7 @@ class Detector:
                 else:
                     a_box = subset_dict["selected_box"]
                     box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1]
-                    reflectance_means_sum = (box_metrics["red_mean"] + box_metrics["blue_mean"] + box_metrics[
-                        "green_mean"]) * 10
-                    ratio_means_sum = box_metrics["red_ratio_max"] + box_metrics["green_ratio_max"] + box_metrics[
-                        "blue_ratio_max"]
-                    box_metrics["std"] = np.nanmean(np.nanstd(box_arr, 0)) * 10
-                    box_metrics["score"] = box_metrics["spectral_angle"] + box_metrics["std"] - (
-                                1 - box_metrics["slope"]) + reflectance_means_sum + ratio_means_sum
+                    box_metrics = self.calc_score(box_metrics, box_arr)
                     if not self._spatial_spectral_match(box_metrics):
                         return {}
         box_too_small = all([(selected_box[2] - selected_box[0] + 1) <= 2, (selected_box[3] - selected_box[1] + 1) <= 2])
@@ -665,13 +659,13 @@ class Detector:
 
     def _spatial_spectral_match(self, metrics_dict):
         is_match = True
-        has_values = 7
+        has_values = 6
         try:
             ratios_means = [metrics_dict["red_ratio_max"], metrics_dict["green_ratio_max"], metrics_dict["blue_ratio_max"]]
         except KeyError:
             has_values -= 1
         else:
-            ratios_high = np.max(ratios_means) > 0.3
+            ratios_high = np.max(ratios_means) > 0.2
             ratios_high_all = all([mean_value > 0.1 for mean_value in ratios_means])
             ratios_high_all = ratios_high_all or sum([mean_value > 0.25 for mean_value in ratios_means]) >= 2
             ratios_high_two = sum([mean_value > 0.15 for mean_value in ratios_means]) > 1
@@ -680,10 +674,10 @@ class Detector:
             is_match *= metrics_dict["std"] >= MIN_RGB_STD
         except KeyError:
             has_values -= 1
-        try:
-            is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
-        except KeyError:
-            has_values -= 1
+#        try:
+ #           is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+  #      except KeyError:
+   #         has_values -= 1
         try:
             is_match *= metrics_dict["score"] >= self.min_score
         except KeyError:
@@ -709,6 +703,18 @@ class Detector:
             return False
         else:
             return is_match
+
+    @staticmethod
+    def calc_score(metrics_dict, sub_arr):
+        metrics_dict["std"] = np.nanmean(np.nanstd(sub_arr, 0)) * 10
+        reflectance_means_sum = (metrics_dict["red_mean"] + metrics_dict["blue_mean"] + metrics_dict[
+            "green_mean"]) * 10
+        ratio_means_sum = metrics_dict["red_ratio_max"] + metrics_dict["green_ratio_max"] \
+                          + metrics_dict["blue_ratio_max"]
+        metrics_dict["score"] = metrics_dict["spectral_angle"] + metrics_dict["std"] - np.abs(
+            1 - metrics_dict["slope"]) \
+                               + reflectance_means_sum + ratio_means_sum - metrics_dict["spatial_angle"] / 100
+        return metrics_dict
 
     @staticmethod
     def calc_primary_accuracy(detected_boxes, validation_boxes):
@@ -790,9 +796,9 @@ class Detector:
         """
         quantiles = np.array([arr[i] >= np.nanquantile(arr[i], quantile_value) for i in range(arr.shape[0])],
                              dtype=np.int8)
-        quantiles_initial_sum = quantiles.sum(0)
-        if np.count_nonzero(np.int8(quantiles_initial_sum > 0) * np.int8(quantiles_initial_sum < 3)) == 0:
-            return None
+ #       quantiles_initial_sum = quantiles.sum(0)
+      #  if np.count_nonzero(np.int8(quantiles_initial_sum > 0) * np.int8(quantiles_initial_sum < 3)) == 0:
+       #     return None
         shape = quantiles.shape
         s = shape[1]
         buffers = [2, 2, 1, 1, 2, 2, s, s, s, s]
@@ -861,7 +867,7 @@ class Detector:
 
     @staticmethod
     def expose_anomalous_pixels(band_stack_np):
-        w = 25
+        w = 500
         y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
         roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]))
         for y in range(int(np.round(y_bound / w))):
@@ -875,9 +881,9 @@ class Detector:
                 roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
                 roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
                 roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-        diff_ratios = band_stack_np - np.nanmean(roads, 0)
-        span = ((np.nanmax(diff_ratios, 0) - np.nanmin(diff_ratios, 0)) * 10) ** 5
-        mask = np.int8(span > np.nanmedian(span))
+        diff_ratios = band_stack_np[0:3] - np.nanmin(roads, 0)
+        span = ((np.nanmax(diff_ratios, 0) - np.nanmin(diff_ratios, 0)) * 1000) ** 3
+        mask = np.int8(span > np.nanquantile(span, [0.5]))
         bands_masked = band_stack_np * mask
         bands_masked[bands_masked == 0] = np.nan
         return bands_masked
