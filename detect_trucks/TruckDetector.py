@@ -116,7 +116,10 @@ class Detector:
                                      {"lat": self.lat, "lon": self.lon},
                                      dir_ancil)
         band_stack_np = np.array([band_dict["B04"], band_dict["B03"], band_dict["B02"], band_dict["B08"]])
-        band_stack_np[np.isnan(band_stack_np)] = 0.
+        low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
+        #high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.98])  # mask out highest 1 % reflectances
+        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
+        #band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
         band_stack_np *= osm_mask
         try:
             band_stack_np = band_stack_np[:, subset_box["ymin"]:subset_box["ymax"], subset_box["xmin"]:subset_box["xmax"]]
@@ -124,14 +127,13 @@ class Detector:
             self.lon = self.lon[subset_box["xmin"]:subset_box["xmax"] + 1]
         except TypeError:  # subset_box is allowed to be None
             pass
-        low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
-        high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.99])  # mask out highest 1 % reflectances
-        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
-        band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
         band_stack_np_rescaled = band_stack_np.copy()
         band_stack_np = None
         band_stack_np_rescaled[np.isnan(band_stack_np_rescaled)] = 0
-        band_stack_np_rescaled = rescale(band_stack_np_rescaled, 0, 1)  # rescale for initial detection
+        band_stack_np_rescaled = rescale(band_stack_np_rescaled, 0, 1)
+        band_stack_np_rescaled[:, band_stack_np_rescaled[0] > THRESHOLDS["red_high"][0]] = np.nan
+        band_stack_np_rescaled[:, band_stack_np_rescaled[1] > THRESHOLDS["green_high"][0]] = np.nan
+        band_stack_np_rescaled[:, band_stack_np_rescaled[2] > THRESHOLDS["blue_high"][0]] = np.nan
         band_stack_np_rescaled[band_stack_np_rescaled == 0] = np.nan
         return band_stack_np_rescaled
 
@@ -156,20 +158,19 @@ class Detector:
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
         min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.5]), np.nanquantile(b02, [0.999])
-        max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.9]), np.nanquantile(b04, [0.9])
+        max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.8]), np.nanquantile(b04, [0.8])
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
-        bg = np.int8(bg_ratio > (-np.nanmean(b02) - np.nanmean(b03)))
-        br = np.int8(br_ratio > (-np.nanmean(b02) - np.nanmean(b04)))
+        bg = np.int8(bg_ratio > np.nanmean(b02) - np.nanmean(b03))
+        br = np.int8(br_ratio > np.nanmean(b02) - np.nanmean(b04))
         blue_min = np.int8(b02 > min_quantile_blue)  # exclude low 50 % blue
         blue_max = np.int8(b02 < max_quantile_blue)
-  #      green_max = np.int8(b03 < max_quantile_green)
-   #     red_max = np.int8(b04 < max_quantile_red)
-        ndvi_max = np.int8(normalized_ratio(self.band_stack_np[3], b04) < MAX_NDVI)
+        green_max = np.int8(b03 < max_quantile_green)
+        red_max = np.int8(b04 < max_quantile_red)
         self.band_stack_np = self.expose_anomalous_pixels(self.band_stack_np)
         # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
         std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 >= THRESHOLDS["q1_std_at_max_blue"][0])
       #  self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
-        self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * ndvi_max)
+        self.trucks_np = np.int8(bg * br * blue_min * green_max * red_max * std_min)
         bg_ratio, br_ratio, blue_min, blue_max, green_max, red_max, std_min = None, None, None, None, None, None, None
 
     def _context_zoom(self):
@@ -249,15 +250,14 @@ class Detector:
         :param subset: numpy ndarray of shape (4, 9, 9) containing the reflectances of subset
         :return: dict with resulting detection box and its metrics
         """
-        subset_copy = subset.copy()
         t0 = datetime.now()
+        subset_copy = subset.copy()
+        subset[:, normalized_ratio(subset[3], subset[0]) > MAX_NDVI] = np.nan
         detection_y, detection_x = int(subset.shape[1] / 2), int(subset.shape[2] / 2)  # index of detection (center)
         detection_yx = [detection_y, detection_x]
-       # subset[np.isnan(subset)] = 0
-       # subset = rescale(subset, 0, 1)
+        if np.isnan(subset[0, detection_y, detection_x]):  # NDVI too high. Mask here, saves time
+            return {}
         detection_stack = subset[:, detection_y, detection_x].copy()
-     #   subset *= np.int8(normalized_ratio(subset[3], subset[0]) <= MAX_NDVI)
-      #  subset[subset == 0] = np.nan
         subset[:, detection_y, detection_x] = detection_stack.copy()
         if np.count_nonzero(~np.isnan(subset[0])) < 3:
             return {}
@@ -272,17 +272,17 @@ class Detector:
         ratios[:, np.isnan(ratios[0])] = np.nan
         # localize potential box through high quantile
         q = np.float32([0.99])
-       # print("Section 1 took: %s" % str((datetime.now() - t0).total_seconds()))
+     #   print("Section 1 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         qantiles_dummy = np.float32([1, 1])
         quantiles_sum = qantiles_dummy.copy()
-        while np.count_nonzero(quantiles_sum) < 10 and q[0] > 0.1:
+        while np.count_nonzero(quantiles_sum) < 8 and q[0] > 0.9:
             quantiles_sum = self.quantile_filter(ratios, q)
             if quantiles_sum is None:
                 quantiles_sum = qantiles_dummy.copy()
             q -= 0.01
         q += 0.01
-     #   print("Section 2 took: %s" % str((datetime.now() - t0).total_seconds()))
+  #      print("Section 2 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         try:
             s = all(quantiles_sum == qantiles_dummy)
@@ -294,7 +294,7 @@ class Detector:
             quantiles_sum[quantiles_sum > 0] = 1
         except TypeError:
             return {}
-     #   quantiles_sum = self.eliminate_single_nonzeros(quantiles_sum)
+        quantiles_sum = self.eliminate_single_nonzeros(quantiles_sum)
         if np.count_nonzero(quantiles_sum > 0) < 3:
             return {}
         for j, k, t in zip([0, 2, 4], [1, 3, 5], [MAX_MAX_DIST_RED + 1, MAX_MAX_DIST_GREEN + 1, 2]):
@@ -302,11 +302,11 @@ class Detector:
                                                                            quantiles_sum, detection_yx, t, q)
         # apply cluster exposing method twice in order to account for changes introduced by filter
         y_low, x_low, y_up, x_up = detection_y - 1, detection_x - 1, detection_y + 2, detection_x + 2
-  #      quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
+        quantiles_sum[y_low:y_up, x_low:x_up] = np.zeros((3, 3))  # temporary
         spatial_cluster = self._expose_cluster(quantiles_sum, subset[0:3], False)
         # if a cluster has high amount of values exclude corners, potentially divide large cluster
         boxes, boxes_metrics, scores, clusters = [], [], [], []
-   #     print("Section 3 took: %s" % str((datetime.now() - t0).total_seconds()))
+     #   print("Section 3 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         for cluster in np.unique(spatial_cluster[spatial_cluster != 0]):
             spatial_cluster[detection_y, detection_x] = cluster  # assign value of cluster to detection pixel
@@ -323,6 +323,7 @@ class Detector:
             ys, xs = np.where(spatial_cluster == cluster)
             if len(ys) < 2:
                 continue
+            ys, xs = self.eliminate_outlier_indices(ys, xs)
             a_box = [np.min(ys), np.min(xs), np.max(ys), np.max(xs)]
             box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             if np.count_nonzero(~np.isnan(box_arr)) / 3 / (box_arr.shape[1] * box_arr.shape[2]) < 0.3:  # too few pixels
@@ -330,9 +331,9 @@ class Detector:
             box_ratios = ratios[:, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             t0b = datetime.now()
             box_metrics = self._characterize_spatial_spectral(box_arr, box_ratios)
-            a_box = self._crop_box(a_box, ratios, box_metrics["direction"], detection_yx)
+          #  a_box = self._crop_box(a_box, ratios, box_metrics["direction"], detection_yx)
             #print("Section 4b took: %s" % str((datetime.now() - t0b).total_seconds()))
-            box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
+           # box_arr = subset[0:3, a_box[0]:a_box[2] + 1, a_box[1]:a_box[3] + 1].copy()
             if all([box_arr.shape[1] <= 2, box_arr.shape[2] <= 2]):
                 continue
             box_metrics = self.calc_score(box_metrics, box_arr)
@@ -341,7 +342,7 @@ class Detector:
                 boxes.append(a_box)
                 boxes_metrics.append(box_metrics)
                 scores.append(box_metrics["score"])
-        #print("Section 4 took: %s" % str((datetime.now() - t0).total_seconds()))
+   #     print("Section 4 took: %s" % str((datetime.now() - t0).total_seconds()))
         t0 = datetime.now()
         scores = np.array(scores)
         try:
@@ -371,7 +372,7 @@ class Detector:
             return {}
         the_box = {"ymin": selected_box[0], "xmin": selected_box[1],
                    "ymax": selected_box[2], "xmax": selected_box[3]}
-        #print("Section 5 took: %s" % str((datetime.now() - t0).total_seconds()))
+  #      print("Section 5 took: %s" % str((datetime.now() - t0).total_seconds()))
         return {"box": the_box,
                 "box_metrics": box_metrics,
                 "quantile": q[0],
@@ -392,9 +393,9 @@ class Detector:
         for key in keys:
             return_dict[key] = np.nan
         return_dict_copy = return_dict.copy()
-        blue_ratios = np.nansum(sub_variables[4:6], 0)  # sum of blue ratios
-        green_ratios = np.nansum(sub_variables[2:4], 0)  # sum of green ratios
-        red_ratios = np.nansum(sub_variables[0:2], 0)  # sum of red ratios
+        blue_ratios = np.nansum(sub_variables[4:6], 0) + sub_arr[2] * 10  # sum of blue ratios
+        green_ratios = np.nansum(sub_variables[2:4], 0) + sub_arr[1] * 10  # sum of green ratios
+        red_ratios = np.nansum(sub_variables[0:2], 0) + sub_arr[0] * 10  # sum of red ratios
         try:
             try:
                 blue_y, blue_x = self.crop_2d_indices(np.where(blue_ratios == np.nanmax(blue_ratios)))
@@ -440,18 +441,18 @@ class Detector:
                                   sub_variables[6, red_y, red_x],
                                   sub_variables[7, blue_y, blue_x],
                                   sub_variables[7, green_y, green_x],
-                                  sub_variables[7, red_y, red_x]]) #,
-                           #       sub_arr[2, blue_y, blue_x],
-                            #      sub_arr[2, green_y, green_x],
-                             #     sub_arr[2, red_y, red_x],
-                              #    sub_arr[1, green_y, green_x],
-                               #   sub_arr[1, blue_y, blue_x],
-                                #  sub_arr[1, red_y, red_x],
-                                 # sub_arr[0, red_y, red_x],
-                                  #sub_arr[0, blue_y, blue_x],
-                                  #sub_arr[0, green_y, green_x]])
+                                  sub_variables[7, red_y, red_x],
+                                  sub_arr[2, blue_y, blue_x],
+                                  sub_arr[2, green_y, green_x],
+                                  sub_arr[2, red_y, red_x],
+                                  sub_arr[1, green_y, green_x],
+                                  sub_arr[1, blue_y, blue_x],
+                                  sub_arr[1, red_y, red_x],
+                                  sub_arr[0, red_y, red_x],
+                                  sub_arr[0, blue_y, blue_x],
+                                  sub_arr[0, green_y, green_x]])
         col_names, spectral_angles, slopes, spearman = [], [], [], []
-        for i in range(4):
+        for i in range(7):
             col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
         # calculate spearmanr correlations between given variables and all reference variables
         for row in RGB_VECTORS.iterrows():
@@ -867,9 +868,9 @@ class Detector:
 
     @staticmethod
     def expose_anomalous_pixels(band_stack_np):
-        w = 500
+        w = 1000
         y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
-        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]))
+        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
         for y in range(int(np.round(y_bound / w))):
             for x in range(int(np.round(x_bound / w))):
                 y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
@@ -881,9 +882,9 @@ class Detector:
                 roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
                 roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
                 roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-        diff_ratios = band_stack_np[0:3] - np.nanmin(roads, 0)
-        span = ((np.nanmax(diff_ratios, 0) - np.nanmin(diff_ratios, 0)) * 1000) ** 3
-        mask = np.int8(span > np.nanquantile(span, [0.5]))
+        diff = band_stack_np[0:3] - np.nanmin(roads, 0)
+        span = ((np.nanmax(diff, 0) - np.nanmin(diff, 0)) * 100) ** 6
+        mask = np.int8(span > np.nanquantile(span, [0.3]))
         bands_masked = band_stack_np * mask
         bands_masked[bands_masked == 0] = np.nan
         return bands_masked
