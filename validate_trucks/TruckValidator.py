@@ -120,7 +120,7 @@ class Validator:
                                                   "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta)
             # remove original band stack file that has been moved to archive yet
             curr_detections = detector.detect_trucks(band_stack_np)
-            curr_detections_file = os.path.join(self.dirs["detections"], "test4_s2_detections_%s_%s_box%s.gpkg" %
+            curr_detections_file = os.path.join(self.dirs["detections"], "test14_s2_detections_%s_%s_box%s.gpkg" %
                                                 (self.date, self.station_name_clear, i))
             self.detections_files.append(curr_detections_file)
             curr_detections.to_file(curr_detections_file, driver="GPKG")
