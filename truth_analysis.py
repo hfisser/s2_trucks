@@ -46,7 +46,8 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv):
         ratio_counterparts = [[1, 2], [0, 2], [0, 1]]
         for band_idx in range(n_bands):
             for j, k in enumerate(ratio_counterparts[band_idx]):
-                ratios[band_idx + band_idx + j] = normalized_ratio(sub_arr[band_idx], sub_arr[k])
+                refl = sub_arr[band_idx]
+                ratios[band_idx + band_idx + j] = normalized_ratio(sub_arr[band_idx], sub_arr[k]) + refl * 10
         ratios[-2] = np.nanstd(sub_arr[0:3], 0) * 10
         ratios[-1] = np.nanstd(ratios, 0) * 10
         blue_ratios = np.nansum(ratios[4:6], 0)
@@ -134,6 +135,8 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv):
         truth.loc[index, "std"] = np.nanmean(np.nanstd(sub_arr[0:3], 0)) * 10
         truth.loc[index, "std_at_max_blue"] = np.nanstd(sub_arr_copy[0:3, blue_max_ratio_idx[0][0],
                                                         blue_max_ratio_idx[1][0]], 0) * 10
+        truth.loc[index, "mean_var"] = np.nanmean(np.nanvar(sub_arr_copy[0:3], 0))
+        truth.loc[index, "std_var"] = np.nanstd(np.nanvar(sub_arr_copy[0:3], 0))
         y, x = blue_max_ratio_idx[0][0], blue_max_ratio_idx[1][0]
         spectra.loc[index, "b08"] = sub_arr[3, y, x]
         spectra.loc[index, "b02"] = sub_arr_copy[2, y, x]
@@ -207,7 +210,9 @@ def analyze_statistics(truth_csv, spectra_csv):
                                "min_std_at_max_blue": [float(np.nanmin(truth["std_at_max_blue"]))],
                                "mean_std_at_max_blue": [float(np.nanmean(truth["std_at_max_blue"]))],
                                "q1_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.005]))],
-                               "q99_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.995]))]})
+                               "q99_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.995]))],
+                               "q1_mean_var": [float(np.nanquantile(truth["mean_var"], [0.005]))],
+                               "mean_std_var": [float(np.nanmean(truth["std_var"]))]})
     print(thresholds)
     thresholds.astype(np.float64).to_csv(os.path.join(os.path.dirname(truth_csv), "thresholds.csv"))
     #cluster_spectra(spectra_csv, 10)
@@ -256,8 +261,8 @@ def calc_ndvi_thresholds(maximum_ndvi):
 def calc_angles(stack, ratios, detections):
     # spatio-spectral test
     red, green, blue = stack[0].copy(), stack[1].copy(), stack[2].copy()
-    green_criteria = normalized_ratio(green, blue) + normalized_ratio(green, red)
-    red_criteria = normalized_ratio(red, green) + normalized_ratio(red, blue)
+    green_criteria = np.nansum(ratios[2:4], 0)
+    red_criteria = np.nansum(ratios[0:2], 0)
     try:
         blue_y, blue_x = [index[0] for index in np.where(detections == 1)]
         green[blue_y, blue_x] = 0
