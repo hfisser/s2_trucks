@@ -12,12 +12,15 @@ except ModuleNotFoundError:
 from OSMPythonTools.overpass import overpassQueryBuilder, Overpass
 
 
-def buffer_bbox(bbox_osm):
-    offset = 0.25  # add a buffer to bbox in order to be sure array is entirely covered
-    bbox_osm[0] -= offset  # min lat
-    bbox_osm[1] -= offset  # min lon
-    bbox_osm[2] += offset  # max lat
-    bbox_osm[3] += offset  # max lon
+def buffer_bbox(bbox_osm, ref_arr):
+    offset_lat, offset_lon = 0.5, 0.5
+    if ref_arr is not None:
+        offset_lat = 0.1
+        offset_lon = 1
+    bbox_osm[0] -= offset_lat  # min lat
+    bbox_osm[1] -= offset_lon  # min lon
+    bbox_osm[2] += offset_lat  # max lat
+    bbox_osm[3] += 2  # max lon
     return bbox_osm
 
 
@@ -29,9 +32,10 @@ def buffer_bbox(bbox_osm):
 # returns GeoPandasDataFrame
 def get_osm(bbox,
             osm_value="motorway",
-            osm_key="highway"):
+            osm_key="highway",
+            ref_arr=None):
     element_type = ["way", "relation"]
-    bbox_osm = buffer_bbox(bbox)
+    bbox_osm = buffer_bbox(bbox, ref_arr)
     quot = '"'
     select = quot + osm_key + quot + "=" + quot + osm_value + quot
     select_link = select.replace(osm_value, osm_value + "_link")  # also get road links
@@ -71,12 +75,12 @@ def get_osm(bbox,
 # osm_values List of String OSM values
 # roads_buffer Float buffer width
 # dir_write
-def get_roads(bbox, osm_values, buffer_meters, dir_write, filename, crs):
+def get_roads(bbox, osm_values, buffer_meters, dir_write, filename, crs, ref_arr=None):
     fwrite = os.path.join(dir_write, filename + ".gpkg")
     file_tmp = os.path.join(dir_write, "tmp.gpkg")
     if not os.path.exists(fwrite):
         roads = []
-        offset = 7.5  # meters
+        offset = 10  # meters
         buffer_dist = "buffer_distance"
         # buffer according to road type
         m, t, p, s, ter = "motorway", "trunk", "primary", "secondary", "tertiary"
@@ -84,7 +88,7 @@ def get_roads(bbox, osm_values, buffer_meters, dir_write, filename, crs):
                    s: buffer_meters - (3 * offset), ter: buffer_meters - (4 * offset)}
         osm_values_int = {m: 1, t: 2, p: 3, s: 4, ter: 5}
         for osm_value in osm_values:
-            roads_osm = get_osm(bbox=bbox, osm_value=osm_value)
+            roads_osm = get_osm(bbox=bbox, osm_value=osm_value, ref_arr=ref_arr)
             if len(roads_osm) > 0:
                 roads_osm.to_file(file_tmp, driver="GPKG")
                 roads_osm = gpd.read_file(file_tmp)
