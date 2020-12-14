@@ -6,10 +6,12 @@ import numpy as np
 import rasterio as rio
 import geopandas as gpd
 import pandas as pd
+import xarray as xr
 from glob import glob
 from shutil import copyfile
 from shapely.geometry import Point
 from shapely.geometry.linestring import LineString
+from rasterio.merge import merge
 
 from osm_utils.utils import get_roads, rasterize_osm
 from vector_utils.geocoding import utm_to_4326
@@ -17,6 +19,7 @@ from array_utils.points import raster_to_points
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.TruckDetector import Detector
+from detect_trucks.TruckDetector2 import Detector2
 
 dir_validation = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation"
 dir_osm = os.path.join(os.path.dirname(dir_validation), "data", "osm")
@@ -31,8 +34,8 @@ NAME_HOUR = "Stunde"
 NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
-OSM_BUFFER = 30
-hour, minutes, year = 10, 10, 2018
+OSM_BUFFER = 25
+hour, minutes, year = 11, 10, 2018
 
 stations_a2 = ["Immensen (3489)", "Theeßen (3810)", "Alleringersleben (3837)", "Peine (3306)"]
 stations = {"Theeßen (3810)": ["2018-11-28", "2018-11-28"],
@@ -86,11 +89,17 @@ class Validator:
         sh.set_credentials(SH_CREDENTIALS_FILE)
         sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])  # diff. order
         splitted_boxes = sh.split_box(sh_bbox, resolution)  # bbox may be too large, hence split (if too large)
+        lats, lons = [], []
+        files = []
+        merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (self.station_name_clear,
+                                                                                        period[0],
+                                                                                        period[1]))
         for i, bbox in enumerate(splitted_boxes):
             curr_s2_data_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_box%s.tiff" % (self.station_name_clear,
                                                                                                  period[0],
                                                                                                  period[1], i))
-            if not os.path.exists(curr_s2_data_file):
+            files.append(curr_s2_data_file)
+            if not os.path.exists(merged_file) and not os.path.exists(curr_s2_data_file):
                 band_stack, dir_data = sh.get_data(bbox, period, DataCollection.SENTINEL2_L2A, band_names,
                                                    resolution, self.dirs["s2"])
                 folders = glob(os.path.join(dir_data, "*"))
@@ -101,9 +110,24 @@ class Validator:
                 else:
                     folder = folders[0]
                     reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
-            # read through rio in order to easily have metadata
+         #   try:
+        with rio.open(files[0], "r") as src:
+            meta = src.meta  # get meta
+        merged_stack, transform = merge(files)
+        meta = dict(transform=transform, height=merged_stack.shape[1], width=merged_stack.shape[2],
+                    count=merged_stack.shape[0], driver="GTiff", dtype=merged_stack.dtype,
+                    crs=meta["crs"])
+        if not os.path.exists(merged_file):
+            with rio.open(merged_file, "w", **meta) as tgt:
+                for i in range(merged_stack.shape[0]):
+                    tgt.write(merged_stack[i], i+1)
+        curr_detections_file = os.path.join(self.dirs["detections"], "test17_s2_detections_%s_%s.gpkg" %
+                                            (self.date, self.station_name_clear))
+        if 0: #os.path.exists(curr_detections_file):
+            pass
+        else:
             try:
-                with rio.open(curr_s2_data_file) as src:
+                with rio.open(merged_file, "r") as src:
                     meta = src.meta
                     band_stack_np = np.zeros((meta["height"], meta["width"], meta["count"]))
                     for b in range(band_stack_np.shape[2]):
@@ -111,24 +135,38 @@ class Validator:
             except rio.errors.RasterioIOError as e:
                 raise e
             band_stack_np = band_stack_np.swapaxes(0, 2).swapaxes(1, 2)  # z, y, x
-            detector = Detector()
-            detector.min_score = 2
+            #detector = Detector()
+            detector = Detector2()
+            detector.min_score = 0.5
             # transform to EPSG:4326
             t, epsg_4326 = meta["transform"], "EPSG:4326"
             #sub = {"ymin": 800, "ymax": band_stack_np.shape[1], "xmin": 0, "xmax": band_stack_np.shape[2]}
             band_stack_np = detector.pre_process({"B08": band_stack_np[3], "B04": band_stack_np[0],
                                                   "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta)
-            # remove original band stack file that has been moved to archive yet
-            curr_detections = detector.detect_trucks(band_stack_np)
-            curr_detections_file = os.path.join(self.dirs["detections"], "test14_s2_detections_%s_%s_box%s.gpkg" %
-                                                (self.date, self.station_name_clear, i))
+          #  curr_detections = detector.detect_trucks(band_stack_np)
+            var = detector.reveal_trucks(band_stack_np)
+            meta["dtype"] = np.float64
+            meta["count"] = 1
+    #        with rio.open(os.path.join(dir_validation, "mask.tiff"), "w", **meta) as tgt:
+     #           tgt.write(mask, 1)
+               # for idx in range(detector.band_stack_np.shape[0]):
+                #    tgt.write(np.float64(detector.band_stack_np[idx]), idx+1)
+
+            station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
+            station_file = station_folder + "_%s.csv" % str(year)
+            station_counts_csv = os.path.join(self.dirs["station_counts"], station_folder, station_file)
+            detector.calibrate(station_counts_csv, self.station_name,
+                               os.path.join(dir_validation, "calibration.csv"), self.date, hour)
+         #   curr_detections.to_file(curr_detections_file, driver="GPKG")
             self.detections_files.append(curr_detections_file)
-            curr_detections.to_file(curr_detections_file, driver="GPKG")
             # decrease size of reference lat, lon raster in order to calculate road distances on it
-            meta["width"], meta["height"] = int(meta["width"] / 50), int(meta["height"] / 50)
-            self.lat, self.lon = lat_from_meta(meta), lon_from_meta(meta)
+            lats.append(lat_from_meta(meta))
+            lons.append(lon_from_meta(meta))
             detector, band_stack_np = None, None
-            shutil.rmtree(folder)  # remove original download file
+            if os.path.exists(folder):
+                shutil.rmtree(folder)  # remove original download file
+        self.lat = np.sort(np.unique(lats))[::-1]
+        self.lon = np.sort(np.unique(lons))
 
     def validate(self):
         # read all detection files (may be multiple due to box splitting)
@@ -145,16 +183,22 @@ class Validator:
         station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
         station_file = station_folder + "_%s.csv" % str(year)
         station_counts = pd.read_csv(os.path.join(self.dirs["station_counts"], station_folder, station_file), sep=";")
-        x, y = self.station_meta["x"], self.station_meta["y"]
-        station_point = Point(np.flip(utm.to_latlon(x, y, self.station_meta["utm_zone"], "N")))
-        osm_raster = rasterize_osm(self.osm_roads, np.zeros((len(self.lat), len(self.lon))))
-        osm_raster[~np.isnan(osm_raster) * osm_raster != 0] = 1
+        station_point = Point([self.station_meta["x"], self.station_meta["y"]])
+        ref = xr.DataArray(np.zeros((len(self.lat), len(self.lon))),  coords={"lat": self.lat, "lon": self.lon},
+                           dims=("lat", "lon"))
+        osm_raster_aggregated = self.max_aggregate(rasterize_osm(self.osm_roads, ref), 50)
+        osm_raster_aggregated[~np.isnan(osm_raster_aggregated) * osm_raster_aggregated != 0] = 1
+        # downsample lat lon to aggregated osm roads
+        shape_new = osm_raster_aggregated.shape
+        lat_aggregated = np.flip(np.arange(self.lat[-1], self.lat[0], (self.lat[0] - self.lat[-1]) / shape_new[0]))
+        lon_aggregated = np.arange(self.lon[0], self.lon[-1], (self.lon[-1] - self.lon[0]) / shape_new[1])
         # create point grid in aoi
-        road_points = raster_to_points(osm_raster, {"lat": self.lat, "lon": self.lon}, "id", self.crs)
+        road_points = raster_to_points(osm_raster_aggregated, {"lat": lat_aggregated, "lon": lon_aggregated},
+                                       "id", "EPSG:" + str(all_detections[0].crs.to_epsg()))
         # subset points to osm road polygons in order to construct line from detection to station
-        road_points_clipped = gpd.sjoin(road_points,
-                                        gpd.GeoDataFrame({"id": [0]}, geometry=[self.osm_roads.unary_union]),
-                                        "left", "within")
+     #   road_points_clipped = gpd.sjoin(road_points,
+      #                                  gpd.GeoDataFrame({"id": [0]}, geometry=[self.osm_roads.unary_union]),
+       #                                 "left", "within")
         detections_in_reach = []
         for detection in self.detections.iterrows():
             detection = detection[1]
@@ -164,22 +208,33 @@ class Validator:
             station_y, station_x = station_point.y, station_point.x
             sorted_ys = np.sort([detection_y, station_y])
             sorted_xs = np.sort([detection_x, station_x])
-            for road_point in road_points_clipped.geometry:
-                if sorted_ys[0] < road_point.y > sorted_ys[1] and sorted_xs[0] < road_point.x > sorted_xs[1]:
-                    points_between_detection_and_station.append(road_point)
-            line_to_detection = LineString(points_between_detection_and_station)  # create line from detection to station
-            traveled_distance = detection["speed"] * hour_proportion
-            distance_matching = traveled_distance >= line_to_detection.length  # passed by the station in number of minutes
+      #      for road_point in road_points.geometry:
+       #         if sorted_ys[0] < road_point.y > sorted_ys[1] and sorted_xs[0] < road_point.x > sorted_xs[1]:
+        #            points_between_detection_and_station.append(road_point)
+         #   line_to_detection = LineString(points_between_detection_and_station)  # create line from detection to station
+            traveled_distance = 90 * hour_proportion  #detection["speed"] * hour_proportion
+            line_to_detection = LineString([detection_point, station_point])
+            # passed by the station in number of minutes
+            distance_matching = traveled_distance >= line_to_detection.length / 1000
+            if distance_matching:
+                detections_in_reach.append(detection)
+            else:
+                continue
+
+            if not distance_matching:
+                continue
             # check direct line to detection and compare with vehicle heading (only include if heading away)
             direct_vector_to_detection = self.calc_vector([station_y, station_x], [detection_y, detection_x])
             # calculate in which direction the station is
             direction_bins = np.arange(0, 359, 22.5, dtype=np.float32)
-            offset = int(len(direction_bins) / 4)
+#            offset = int(len(direction_bins) / 4)
             station_direction = self.calc_vector_direction_in_degree(direct_vector_to_detection)
             diffs = np.abs(direction_bins - station_direction)
             lowest_diff_idx = np.where(diffs == diffs.min())[0][0]
             # get range of directions (180°)
-            direction_range = np.sort([direction_bins[lowest_diff_idx - 4], direction_bins[lowest_diff_idx + 4]])
+            up = lowest_diff_idx + 4
+            up = up - len(direction_bins) if up >= len(direction_bins) else up
+            direction_range = np.sort([direction_bins[lowest_diff_idx - 4], direction_bins[int(up)]])
             # check if vehicle is traveling from station (count it) or to station (drop it)
             direction_matching = direction_range[0] < detection["direction_degree"] < direction_range[1]
             if distance_matching and direction_matching:
@@ -200,8 +255,9 @@ class Validator:
 
     def prepare_s2_counts(self):
         osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], OSM_BUFFER,
-                             self.dirs["osm"], str(self.bbox_epsg4326).replace(", ", "_")[1:-1].replace(".", "_")
-                             + "_osm_roads", str(self.crs))
+                             os.path.join(dir_validation, "data", "osm"),
+                             str(self.bbox_epsg4326).replace(", ", "_")[1:-1].replace(".", "_")
+                             + "_osm_roads", "EPSG:" + str(self.detections.crs.to_epsg()))
         osm_roads = gpd.read_file(osm_file)
         # subset to road type of station
         station_road_type = [self.station_meta["road_type"]]
@@ -218,9 +274,9 @@ class Validator:
         detections_within = []
         for row in self.detections.iterrows():
             row = row[1]
-            if row.intersects(osm_union):
+            if row.geometry.intersects(osm_union):
                 detections_within.append(row)
-        self.detections = pd.concat(detections_within)
+        self.detections = gpd.GeoDataFrame(detections_within)
 
     @staticmethod
     def get_station_meta(station_name):
@@ -287,6 +343,18 @@ class Validator:
             direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
         direction += offset + y_offset + x_offset
         return direction
+
+    @staticmethod
+    def max_aggregate(in_arr, scale):
+        scale -= 1
+        y_out, x_out = int(in_arr.shape[0] / scale), int(in_arr.shape[1] / scale)
+        out_arr = np.zeros((y_out, x_out))
+        for y in range(out_arr.shape[0]):
+            for x in range(out_arr.shape[1]):
+                y_low, x_low = y * scale, x * scale
+                y_up, x_up = y_low + scale + 1, x_low + scale + 1
+                out_arr[y, x] = int(np.count_nonzero(in_arr[y_low:y_up, x_low:x_up]) > 20)
+        return out_arr
 
 
 if __name__ == "__main__":
