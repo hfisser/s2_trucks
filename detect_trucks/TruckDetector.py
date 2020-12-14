@@ -28,14 +28,14 @@ RGB_VECTORS = pd.read_csv(os.path.join(dir_ancillary, "rgb_vector_clusters.csv")
 # REFLECTANCE
 MIN_RED = THRESHOLDS["red_low"][0]
 MAX_RED = THRESHOLDS["red_high"][0]
-MAX_RED_BOX = THRESHOLDS["box_mean_red_high"][0]
+#MAX_RED_BOX = THRESHOLDS["box_mean_red_high"][0]
 MIN_GREEN = THRESHOLDS["green_low"][0]
 MAX_GREEN = THRESHOLDS["green_high"][0]
-MAX_GREEN_BOX = THRESHOLDS["box_mean_green_high"][0]
+#MAX_GREEN_BOX = THRESHOLDS["box_mean_green_high"][0]
 MIN_BLUE = THRESHOLDS["blue_low"][0]
 MAX_BLUE = THRESHOLDS["blue_high"][0]
-MAX_BLUE_BOX = THRESHOLDS["box_mean_blue_high"][0]
-MIN_RGB_STD = THRESHOLDS["min_std"][0]
+#MAX_BLUE_BOX = THRESHOLDS["box_mean_blue_high"][0]
+MIN_RGB_STD = THRESHOLDS["min_std"][0] / 3
 # VEGETATION
 MAX_NDVI = THRESHOLDS["ndvi_mean"][0] + THRESHOLDS["ndvi_std"][0] * 3
 # RATIOS
@@ -51,11 +51,12 @@ MAX_MAX_DIST_RED = THRESHOLDS["max_max_dist_red"][0]
 MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 3
 # SPECTRAL ANGLE
 #MIN_R_SQUARED = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
+DEFAULT_MIN_CORRELATION = 0.1
 MAX_SLOPE = 10
-MIN_SLOPE = 0.2
+MIN_SLOPE = 0.05
 
 # Open Street Maps buffer
-OSM_BUFFER = 30
+OSM_BUFFER = 25
 
 # Sensing offset
 SECONDS_OFFSET_B02_B04 = 1.01  # seconds
@@ -88,8 +89,7 @@ class Detector:
         :param metadata: dict metadata from rasterio IO
         :param subset_box: dict with int ymin, ymax, xmin, xmax
         """
-        default_r_squared = 0.5
-        self.min_r_squared = default_r_squared if self.min_r_squared is None else self.min_r_squared
+        self.min_r_squared = DEFAULT_MIN_CORRELATION #if self.min_r_squared is None else self.min_r_squared
         if not isinstance(band_dict, dict):
             raise TypeError("'band_dict' must be a dictionary")
         try:
@@ -118,7 +118,7 @@ class Detector:
         band_stack_np = np.array([band_dict["B04"], band_dict["B03"], band_dict["B02"], band_dict["B08"]])
         low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
         #high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.98])  # mask out highest 1 % reflectances
-        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
+#        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
         #band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
         band_stack_np *= osm_mask
         try:
@@ -131,9 +131,9 @@ class Detector:
         band_stack_np = None
         band_stack_np_rescaled[np.isnan(band_stack_np_rescaled)] = 0
         band_stack_np_rescaled = rescale(band_stack_np_rescaled, 0, 1)
-        band_stack_np_rescaled[:, band_stack_np_rescaled[0] > THRESHOLDS["red_high"][0]] = np.nan
-        band_stack_np_rescaled[:, band_stack_np_rescaled[1] > THRESHOLDS["green_high"][0]] = np.nan
-        band_stack_np_rescaled[:, band_stack_np_rescaled[2] > THRESHOLDS["blue_high"][0]] = np.nan
+  #      band_stack_np_rescaled[:, band_stack_np_rescaled[0] > THRESHOLDS["red_high"][0]] = np.nan
+   #     band_stack_np_rescaled[:, band_stack_np_rescaled[1] > THRESHOLDS["green_high"][0]] = np.nan
+    #    band_stack_np_rescaled[:, band_stack_np_rescaled[2] > THRESHOLDS["blue_high"][0]] = np.nan
         band_stack_np_rescaled[band_stack_np_rescaled == 0] = np.nan
         return band_stack_np_rescaled
 
@@ -157,8 +157,8 @@ class Detector:
         Detect pixels of superior blue reflectance based on band ratios
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
-        min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.5]), np.nanquantile(b02, [0.999])
-        max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.8]), np.nanquantile(b04, [0.8])
+        min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.4]), np.nanquantile(b02, [0.999])
+        max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.9]), np.nanquantile(b04, [0.9])
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
         bg = np.int8(bg_ratio > np.nanmean(b02) - np.nanmean(b03))
         br = np.int8(br_ratio > np.nanmean(b02) - np.nanmean(b04))
@@ -166,11 +166,13 @@ class Detector:
         blue_max = np.int8(b02 < max_quantile_blue)
         green_max = np.int8(b03 < max_quantile_green)
         red_max = np.int8(b04 < max_quantile_red)
-        self.band_stack_np = self.expose_anomalous_pixels(self.band_stack_np)
+        mask = self.expose_anomalous_pixels(self.band_stack_np)
+        self.band_stack_np = self.band_stack_np * mask
+        self.band_stack_np[self.band_stack_np == 0] = np.nan
         # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
         std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 >= THRESHOLDS["q1_std_at_max_blue"][0])
       #  self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
-        self.trucks_np = np.int8(bg * br * blue_min * green_max * red_max * std_min)
+        self.trucks_np = np.int8(bg * br * blue_min * std_min)
         bg_ratio, br_ratio, blue_min, blue_max, green_max, red_max, std_min = None, None, None, None, None, None, None
 
     def _context_zoom(self):
@@ -276,7 +278,7 @@ class Detector:
         t0 = datetime.now()
         qantiles_dummy = np.float32([1, 1])
         quantiles_sum = qantiles_dummy.copy()
-        while np.count_nonzero(quantiles_sum) < 8 and q[0] > 0.9:
+        while np.count_nonzero(quantiles_sum) < 6 and q[0] > 0.5:
             quantiles_sum = self.quantile_filter(ratios, q)
             if quantiles_sum is None:
                 quantiles_sum = qantiles_dummy.copy()
@@ -294,7 +296,7 @@ class Detector:
             quantiles_sum[quantiles_sum > 0] = 1
         except TypeError:
             return {}
-        quantiles_sum = self.eliminate_single_nonzeros(quantiles_sum)
+   #     quantiles_sum = self.eliminate_single_nonzeros(quantiles_sum)
         if np.count_nonzero(quantiles_sum > 0) < 3:
             return {}
         for j, k, t in zip([0, 2, 4], [1, 3, 5], [MAX_MAX_DIST_RED + 1, MAX_MAX_DIST_GREEN + 1, 2]):
@@ -316,8 +318,8 @@ class Detector:
             except ValueError:
                 continue
             box_arr = subset[0:3, a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
-            if (np.nanmean(np.nanstd(box_arr, 0)) * 10) < MIN_RGB_STD * 0.5:  # be tolerant here
-                continue
+       #     if (np.nanmean(np.nanstd(box_arr, 0)) * 10) < MIN_RGB_STD * 0.5:  # be tolerant here
+        #        continue
             cluster_sub = spatial_cluster[a_box[0]:a_box[2]+1, a_box[1]:a_box[3]+1].copy()
             cluster_sub[np.isnan(box_arr[0])] = 0
             ys, xs = np.where(spatial_cluster == cluster)
@@ -660,25 +662,25 @@ class Detector:
 
     def _spatial_spectral_match(self, metrics_dict):
         is_match = True
-        has_values = 6
-        try:
-            ratios_means = [metrics_dict["red_ratio_max"], metrics_dict["green_ratio_max"], metrics_dict["blue_ratio_max"]]
-        except KeyError:
-            has_values -= 1
-        else:
-            ratios_high = np.max(ratios_means) > 0.2
-            ratios_high_all = all([mean_value > 0.1 for mean_value in ratios_means])
-            ratios_high_all = ratios_high_all or sum([mean_value > 0.25 for mean_value in ratios_means]) >= 2
-            ratios_high_two = sum([mean_value > 0.15 for mean_value in ratios_means]) > 1
-            is_match *= ratios_high * ratios_high_all * ratios_high_two
-        try:
-            is_match *= metrics_dict["std"] >= MIN_RGB_STD
-        except KeyError:
-            has_values -= 1
+        has_values = 3
 #        try:
- #           is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+ #           ratios_means = [metrics_dict["red_ratio_max"], metrics_dict["green_ratio_max"], metrics_dict["blue_ratio_max"]]
   #      except KeyError:
    #         has_values -= 1
+    #    else:
+     #       ratios_high = np.max(ratios_means) > 0.2
+      #      ratios_high_all = all([mean_value > 0.05 for mean_value in ratios_means])
+       #     ratios_high_all = ratios_high_all or sum([mean_value > 0.25 for mean_value in ratios_means]) >= 2
+        #    ratios_high_two = sum([mean_value > 0.15 for mean_value in ratios_means]) > 1
+         #   is_match *= ratios_high * ratios_high_all * ratios_high_two
+  #      try:
+   #         is_match *= metrics_dict["std"] >= MIN_RGB_STD
+    #    except KeyError:
+     #       has_values -= 1
+        try:
+            is_match *= metrics_dict["spectral_angle"] >= self.min_r_squared
+        except KeyError:
+            has_values -= 1
         try:
             is_match *= metrics_dict["score"] >= self.min_score
         except KeyError:
@@ -691,15 +693,15 @@ class Detector:
             is_match *= green_length < (MAX_MAX_DIST_GREEN + 0.5)
         except KeyError:
             has_values -= 1
-        try:
-            is_match *= metrics_dict["slope"] < MAX_SLOPE
-            is_match *= metrics_dict["slope"] > MIN_SLOPE
-        except KeyError:
-            has_values -= 1
-        try:
-            is_match *= metrics_dict["spatial_angle"] < MAX_ANGLE_BR_BG
-        except KeyError:
-            has_values -= 1
+  #      try:
+   #         is_match *= metrics_dict["slope"] < MAX_SLOPE
+    #        is_match *= metrics_dict["slope"] > MIN_SLOPE
+     #   except KeyError:
+      #      has_values -= 1
+     #   try:
+      #      is_match *= metrics_dict["spatial_angle"] < MAX_ANGLE_BR_BG
+       # except KeyError:
+        #    has_values -= 1
         if has_values == 0:
             return False
         else:
@@ -868,7 +870,7 @@ class Detector:
 
     @staticmethod
     def expose_anomalous_pixels(band_stack_np):
-        w = 1000
+        w = 100
         y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
         roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
         for y in range(int(np.round(y_bound / w))):
@@ -882,17 +884,43 @@ class Detector:
                 roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
                 roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
                 roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-        diff = band_stack_np[0:3] - np.nanmin(roads, 0)
-        span = ((np.nanmax(diff, 0) - np.nanmin(diff, 0)) * 100) ** 6
-        mask = np.int8(span > np.nanquantile(span, [0.3]))
-        bands_masked = band_stack_np * mask
-        bands_masked[bands_masked == 0] = np.nan
-        return bands_masked
+        #max_diff = np.nanmax(band_stack_np[0:3] - np.nanmin(roads, 0), 0)
+        #mask = np.int8(max_diff > np.nanquantile(max_diff, [0.6]))
+        diff_red = band_stack_np[0] - (roads[0] / 2)
+        diff_green = band_stack_np[1] - (roads[1] / 2)
+        diff_blue = band_stack_np[2] - (roads[2] / 2)
+        diff_stack = np.array([diff_red, diff_green, diff_blue])
+        mask = np.zeros_like(diff_stack[0])
+        for i in range(diff_stack.shape[0]):
+            mask += np.int8(diff_stack[i] > np.nanquantile(diff_stack[i], [0.5]))
+        #mask[mask != 0] = 1
+
+        mask = np.int8(diff_stack)
+ #       import rasterio as rio
+#
+  #      with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\test.tiff", "r") as src:
+ #           meta = src.meta
+#
+     #   meta["count"] = 3
+    #    with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\mask14.tiff", "w",
+   #                   **meta) as src:
+  #          for i in range(diff_stack.shape[0]):
+ #               src.write((diff_stack[i]**4).astype(np.float64), i+1)
+#
+    #    mask[mask == 3] = 0
+   #     meta["count"] = 1
+  #      with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\mask4.tiff", "w",
+ #                     **meta) as src:
+#            src.write(mask.astype(np.float64), 1)
+
+
+        return mask
 
     @staticmethod
     def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
         osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
-                             dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs))
+                             dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs),
+                             reference_arr)
         osm_vec = gpd.read_file(osm_file)
         ref_xr = xr.DataArray(data=reference_arr, coords=lat_lon_dict, dims=["lat", "lon"])
         osm_raster = rasterize_osm(osm_vec, ref_xr).astype(np.float32)
