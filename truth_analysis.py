@@ -53,10 +53,11 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
     arr[arr == 0] = np.nan
     ndvi = normalized_ratio(arr[3], arr[0])
     n_bands = 3
-    ratios = np.zeros((n_bands, arr.shape[1], arr.shape[2]))
+    ratios = np.zeros((n_bands + 1, arr.shape[1], arr.shape[2]))
     ratio_counterparts = [2, 0, 0]
     for band_idx in range(n_bands):
         ratios[band_idx] = normalized_ratio(arr[band_idx], arr[ratio_counterparts[band_idx]])
+    ratios[3] = normalized_ratio(arr[1], arr[2])  # add green vs. blue
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
@@ -495,11 +496,13 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, ndvi):
         spectra_ml_pd.loc[row_idx, "red"] = sub_reflectances[0, y, x]
         spectra_ml_pd.loc[row_idx, "green"] = sub_reflectances[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue"] = sub_reflectances[2, y, x]
-        spectra_ml_pd.loc[row_idx, "rgb_std"] = np.nanstd(sub_reflectances[0:3, y, x], 0)
+        spectra_ml_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
+        spectra_ml_pd.loc[row_idx, "reflectance_std"] = np.nanstd(sub_reflectances[0:3, y, x], 0)
         spectra_ml_pd.loc[row_idx, "ndvi"] = ndvi[y, x]
         spectra_ml_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
         spectra_ml_pd.loc[row_idx, "green_red_ratio"] = sub_ratios[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue_red_ratio"] = sub_ratios[2, y, x]
+        spectra_ml_pd.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
     return spectra_ml_pd
 
 
@@ -519,11 +522,13 @@ def add_background(out_pd, reflectances, ratios, ndvi, n_background):
         out_pd.loc[row_idx, "red"] = reflectances[0, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "rgb_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
+        out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
         out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "green_blue_ratio"] = ratios[3, y_arr_idx, x_arr_idx]
     return out_pd
 
 
