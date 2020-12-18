@@ -37,7 +37,7 @@ class RFTruckDetector:
         rf.fit(self.vars["train"], self.labels["train"])
         test_pred = rf.predict(self.vars["test"])
         accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
-        print("Accuracy: %s" % accuracy)
+        print("RF accuracy: %s" % accuracy)
         self.rf_model = rf
 
     def preprocess_bands(self, band_stack, dir_osm):
@@ -85,36 +85,56 @@ class RFTruckDetector:
         t0 = datetime.now()
         preds = predictions_raster.copy()  # copy because will be modified
         blue_ys, blue_xs = np.where(preds == 2)
-        boxes = []
+        boxes, sub_size = [], 15
         for y_blue, x_blue in zip(blue_ys, blue_xs):
             if preds[y_blue, x_blue] == 0:
                 continue
-            subset_21 = self._get_arr_subset(preds, y_blue, x_blue, 21)
-            subset_3 = self._get_arr_subset(preds, y_blue, x_blue, 3)
+            subset_15 = self._get_arr_subset(preds, y_blue, x_blue, sub_size).copy()
+            subset_3 = self._get_arr_subset(preds, y_blue, x_blue, 3).copy()
             if np.count_nonzero(subset_3 > 1) <= 1:  # not background
                 continue
-            half_idx = int(21 / 2)
-            current_value, new_value = subset_21[half_idx, half_idx], 100
-            cluster, yet_seen_indices, yet_seen_values = self._cluster_array(arr=subset_21,
-                                                                             point=[half_idx, half_idx],
+            half_idx_y = y_blue if subset_15.shape[0] < sub_size else int(subset_15.shape[0] * 0.5)
+            half_idx_x = x_blue if subset_15.shape[1] < sub_size else int(subset_15.shape[1] * 0.5)
+            try:
+                current_value = subset_15[half_idx_y, half_idx_x]
+            except IndexError:  # upper array edge
+                half_idx_y, half_idx_x = int(sub_size / 2), int(sub_size / 2)  # index from lower edge is ok
+                current_value = subset_15[half_idx_y, half_idx_x]
+            new_value = 100
+            # eliminate reds directly neighboring blue (only in preds copy), not 3x3 window -> only '+'
+            for y_off, x_off in zip([-1, 0, 0, 1], [0, -1, 1, 0]):
+                this_y, this_x = half_idx_y + y_off, half_idx_x + x_off
+                if subset_15[this_y, this_x] == 4:
+                    subset_15[this_y, this_x] = 0
+            cluster, yet_seen_indices, yet_seen_values = self._cluster_array(arr=subset_15,
+                                                                             point=[half_idx_y, half_idx_x],
                                                                              new_value=new_value,
                                                                              current_value=current_value,
                                                                              yet_seen_indices=[],
                                                                              yet_seen_values=[])
+            # add neighboring blue in 3x3 window around blue
+            ys_blue_additional, xs_blue_additional = np.where(subset_3 == 2)
+            ys_blue_additional += half_idx_y - 1  # get index in subset
+            xs_blue_additional += half_idx_x - 1
+            for y_blue_add, x_blue_add in zip(ys_blue_additional, xs_blue_additional):
+                cluster[int(np.clip(y_blue_add, 0, np.inf)), int(np.clip(x_blue_add, 0, np.inf))] = new_value
             cluster[cluster != new_value] = 0
             cluster_ys, cluster_xs = np.where(cluster == new_value)
-            # corner of 21x21 subset
-            ymin_subset, xmin_subset = np.clip(y_blue - half_idx, 0, np.inf), np.clip(x_blue - half_idx, 0, np.inf)
+            # corner of 15x15 subset
+            ymin_subset, xmin_subset = np.clip(y_blue - half_idx_y, 0, np.inf), np.clip(x_blue - half_idx_x, 0, np.inf)
             cluster_ys += ymin_subset.astype(cluster_ys.dtype)
             cluster_xs += xmin_subset.astype(cluster_xs.dtype)
             ymin, xmin = np.min(cluster_ys), np.min(cluster_xs)
             # +1 on index because Polygon has to extent up to upper bound of pixel (array coords at upper left corner)
             ymax, xmax = np.max(cluster_ys) + 1, np.max(cluster_xs) + 1
-            # set all cells from cluster to background value in predictions array
-            print(np.zeros((ymax - ymin, xmax - xmin), dtype=np.int8).shape)
-            print("ymin: %s, xmin: %s, ymax: %s, xmax: %s" % (ymin, xmin, ymax, xmax))
-            print("=======")
-            preds[ymin:ymax, xmin:xmax] = np.zeros((ymax - ymin, xmax - xmin), dtype=np.int8)
+            # check if blue, green and red are given in box and box is large enough, otherwise drop
+            box_preds = preds[ymin:ymax, xmin:xmax]
+            all_given = all([value in box_preds for value in [2, 3, 4]])
+            large_enough = (box_preds.shape[0] * box_preds.shape[1]) >= 3  # enough cells in box
+            if not all_given or not large_enough:
+                continue
+            # set cells from cluster and all blue cells to zero value in predictions array
+            preds[ymin:ymax, xmin:xmax] = np.int8(box_preds != 2)  # set blue cells in preds within box to zero
             # create output box
             lon_min, lat_min = self.lon[xmin], self.lat[ymin]
             try:
@@ -150,20 +170,35 @@ class RFTruckDetector:
             yet_seen_values.append(current_value)
         arr_modified = arr.copy()
         arr_modified[point[0], point[1]] = 0
-        ymin, xmin = int(np.clip(point[0] - 1, 0, np.inf)), int(np.clip(point[1] - 1, 0, np.inf))
         window_3x3 = self._get_arr_subset(arr_modified.copy(), point[0], point[1], 3)
-        if (current_value + 1) in window_3x3:
-            window_3x3[window_3x3 == current_value] = 0  # proceed with next value, do not follow same value
-            ys, xs = np.where((window_3x3 - current_value) == np.ones_like(window_3x3))  # one value higher
-        else:
-            ys, xs = np.where((window_3x3 - current_value) == np.zeros_like(window_3x3))  # equal value
+        # first look for values on horizontal and vertical, if none given try corners
+        window_3x3_without_corners = self._eliminate_array_corners(window_3x3.copy(), 1)
+        # try matches in 3x3 window, if none given in 3x3 without corner
+        ys, xs, window_idx = [], [], 0
+        windows = [window_3x3_without_corners, window_3x3]
+        offset_y, offset_x = 0, 0
+        while len(ys) == 0 and window_idx < len(windows):
+            window = windows[window_idx]
+            offset_y, offset_x = int(window.shape[0] / 2), int(window.shape[1] / 2)  # offset for window ymin and xmin
+            if (current_value + 1) in window:
+                ys, xs = np.where((window - current_value) == np.ones_like(window))  # one value higher
+            else:
+                ys, xs = np.where(window == current_value)  # equal value
+            window_idx += 1
+        ymin, xmin = int(np.clip(point[0] - offset_y, 0, np.inf)), int(np.clip(point[1] - offset_x, 0, np.inf))
         for y_local, x_local in zip(ys, xs):
             y, x = ymin + y_local, xmin + x_local
             if [y, x] not in yet_seen_indices or len(yet_seen_indices) == 0:
                 current_value = arr[y, x]
+                if 4 in yet_seen_values and current_value <= 3:  # red yet seen but this is green or blue
+                    continue
                 arr_modified[y, x] = new_value
                 yet_seen_indices.append([y, x])
                 yet_seen_values.append(current_value)
+                # avoid picking many more reds than blues and greens
+                n_picks = [np.count_nonzero(np.array(yet_seen_values) == value) for value in [2, 3, 4]]
+                if n_picks[2] > n_picks[0] and n_picks[2] > n_picks[1]:
+                    break  # finish clustering in order to avoid picking many reds at the edge of object
                 arr_modified, yet_seen_indices, yet_seen_values = self._cluster_array(arr_modified, [y, x],
                                                                                       new_value,
                                                                                       current_value,
@@ -242,6 +277,17 @@ class RFTruckDetector:
         return subset
 
     @staticmethod
+    def _eliminate_array_corners(arr, assign_value):
+        y_shape_idx = 1 if len(arr.shape) == 3 else 0
+        y_max, x_max = arr.shape[y_shape_idx], arr.shape[y_shape_idx + 1]
+        for y_idx, x_idx in zip([0, 0, y_max, y_max], [0, x_max, 0, x_max]):
+            try:
+                arr[y_idx, x_idx] = assign_value  # pseudo background
+            except IndexError:  # edge
+                continue
+        return arr
+
+    @staticmethod
     def _get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
         osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
                              dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs),
@@ -277,7 +323,7 @@ if __name__ == "__main__":
     bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
     predictions = rf_td.predict(bands_preprocessed)
     boxes = rf_td.extract_objects(predictions)
-    name = "test9"
+    name = "test20"
     rf_td.prediction_raster_to_gtiff(predictions, os.path.join(dirs["main"], name + "_raster.tiff"))
     rf_td.prediction_boxes_to_gpkg(boxes, os.path.join(dirs["main"], name + "_boxes.gpkg"))
 
