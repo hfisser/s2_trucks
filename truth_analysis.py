@@ -165,7 +165,7 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
   #      spectra.loc[index, "b02"] = sub_arr_copy[2, y, x]
  #       spectra.loc[index, "b03"] = sub_arr_copy[1, y, x]
 #        spectra.loc[index, "b04"] = sub_arr_copy[0, y, x]
-    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 3)
+    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 4)
     print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
