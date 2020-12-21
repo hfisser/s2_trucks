@@ -4,7 +4,7 @@ from numba import jit
 
 @jit(nopython=True, parallel=True)
 def normalized_ratio(a, b):
-    return (a - b) / (a + b)
+    return np.float32((a - b) / (a + b))
 
 
 def rescale(arr, min_val, max_val):
