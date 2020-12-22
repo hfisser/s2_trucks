@@ -7,7 +7,7 @@ import xarray as xr
 import random
 import rasterio as rio
 from sklearn.cluster import KMeans
-from scipy.stats import skew, kurtosis, linregress
+from scipy.stats import linregress
 
 from osm_utils.utils import get_roads, rasterize_osm
 from array_utils.io import rio_read_all_bands
@@ -20,7 +20,7 @@ dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY")
 
-tiles = ["T32UNA", "T32TPS", "T18TWK", "T36RUU", "T31UEQ"]
+tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T36NYF", "T37MCT", "T36RUU", "T35JPM"]
 n_clusters = 50  # number of RGB vector clusters
 
 overwrite_truth_csv = True
@@ -51,6 +51,8 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
     arr[np.isnan(arr)] = 0.
     arr = rescale(arr, 0, 1)
     arr[arr == 0] = np.nan
+    means = [np.nanmean(arr[j]) for j in range(arr.shape[0])]
+    diffs = expose_anomalous_pixels(arr[0:3])
     ndvi = normalized_ratio(arr[3], arr[0])
     n_bands = 3
     ratios = np.zeros((n_bands + 1, arr.shape[1], arr.shape[2]))
@@ -58,17 +60,24 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
     for band_idx in range(n_bands):
         ratios[band_idx] = normalized_ratio(arr[band_idx], arr[ratio_counterparts[band_idx]])
     ratios[3] = normalized_ratio(arr[1], arr[2])  # add green vs. blue
+    ratios_diffs = expose_anomalous_pixels(ratios[0:3])
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
     print(len(boxes_gpd))
-    for i in range(len(boxes_gpd)):
+    n = len(boxes_gpd)  # np.clip(len(boxes_gpd), 0, 50)
+    for i in range(n):
         box = boxes_gpd.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
-        sub_arr = arr[0:4, y0:y1+1, x0:x1+1].copy()
-        sub_ratios = ratios[:, y0:y1+1, x0:x1+1].copy()
-        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1+1, x0:x1+1])
+        sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
+        sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
+        sub_diffs = diffs[:, y0:y1 + 1, x0:x1 + 1].copy()
+        sub_ratio_diffs = ratios_diffs[:, y0:y1 + 1, x0:x1 + 1].copy()
+        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, sub_diffs, sub_ratio_diffs,
+                                         ndvi[y0:y1 + 1, x0:x1 + 1])
+        arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
+        ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
       #  sub_arr_copy = sub_arr.copy()
    #     sub_arr = rescale(sub_arr_copy.copy(), 0, 1)
    #     ratios[-2] = np.nanstd(sub_arr[0:3], 0) * 10
@@ -165,7 +174,7 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
   #      spectra.loc[index, "b02"] = sub_arr_copy[2, y, x]
  #       spectra.loc[index, "b03"] = sub_arr_copy[1, y, x]
 #        spectra.loc[index, "b04"] = sub_arr_copy[0, y, x]
-    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 4)
+    spectra_ml = add_background(spectra_ml, arr, ratios, diffs, ratios_diffs, ndvi, len(boxes_gpd) * 10)
     print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
@@ -467,7 +476,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, ndvi):
+def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_differences, sub_ratio_differences, ndvi):
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
     red_criteria = sub_copy[0] + sub_ratios_copy[0]
@@ -497,6 +506,12 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, ndvi):
         spectra_ml_pd.loc[row_idx, "green"] = sub_reflectances[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue"] = sub_reflectances[2, y, x]
         spectra_ml_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
+        spectra_ml_pd.loc[row_idx, "red_diff"] = sub_differences[0, y, x]
+        spectra_ml_pd.loc[row_idx, "green_diff"] = sub_differences[1, y, x]
+        spectra_ml_pd.loc[row_idx, "blue_diff"] = sub_differences[2, y, x]
+        spectra_ml_pd.loc[row_idx, "red_ratio_diff"] = sub_ratio_differences[0, y, x]
+        spectra_ml_pd.loc[row_idx, "green_ratio_diff"] = sub_ratio_differences[1, y, x]
+        spectra_ml_pd.loc[row_idx, "blue_ratio_diff"] = sub_ratio_differences[2, y, x]
         spectra_ml_pd.loc[row_idx, "reflectance_std"] = np.nanstd(sub_reflectances[0:3, y, x], 0)
         spectra_ml_pd.loc[row_idx, "ndvi"] = ndvi[y, x]
         spectra_ml_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
@@ -506,7 +521,7 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, ndvi):
     return spectra_ml_pd
 
 
-def add_background(out_pd, reflectances, ratios, ndvi, n_background):
+def add_background(out_pd, reflectances, ratios, differences, ratio_differences, ndvi, n_background):
     # pick random indices from non nans
     not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
     not_nan_ndvi = np.int8(~np.isnan(ndvi))
@@ -523,6 +538,12 @@ def add_background(out_pd, reflectances, ratios, ndvi, n_background):
         out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "red_diff"] = differences[0, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "green_diff"] = differences[1, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "blue_diff"] = differences[2, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "red_ratio_diff"] = ratio_differences[0, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "green_ratio_diff"] = ratio_differences[1, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "blue_ratio_diff"] = ratio_differences[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
         out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
@@ -534,7 +555,7 @@ def add_background(out_pd, reflectances, ratios, ndvi, n_background):
 
 def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
     osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
-                         dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs),
+                         dir_out, str(bbox).replace(", ", "_").replace("-", "minus")[1:-1] + "_osm_roads", str(crs),
                          reference_arr)
     osm_vec = gpd.read_file(osm_file)
     ref_xr = xr.DataArray(data=reference_arr, coords=lat_lon_dict, dims=["lat", "lon"])
@@ -542,6 +563,28 @@ def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
     osm_raster[osm_raster != 0] = 1
     osm_raster[osm_raster == 0] = np.nan
     return osm_raster
+
+
+def expose_anomalous_pixels(band_stack_np):
+    w = 1000
+    y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
+    roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
+    for y in range(int(np.round(y_bound / w))):
+        for x in range(int(np.round(x_bound / w))):
+            y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
+            y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
+            y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
+            y_size, x_size = (y_up - y_low), (x_up - x_low)
+            n = y_size * x_size
+            subset = band_stack_np[:, y_low:y_up, x_low:x_up]
+            roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
+            roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
+            roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
+    diff_red = band_stack_np[0] - (roads[0] / 2)
+    diff_green = band_stack_np[1] - (roads[1] / 2)
+    diff_blue = band_stack_np[2] - (roads[2] / 2)
+    diff_stack = np.array([diff_red, diff_green, diff_blue])
+    return diff_stack
 
 
 if __name__ == "__main__":
