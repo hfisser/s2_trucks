@@ -9,7 +9,7 @@ from shapely.geometry import Polygon, box
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn import metrics
-from utils.ProgressBar import ProgressBar
+from scipy.stats import linregress
 from array_utils.math import rescale, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 from osm_utils.utils import get_roads, rasterize_osm
@@ -18,12 +18,14 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
+s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
+s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 
 truth_csv = os.path.join(dirs["truth"], "spectra_ml.csv")
-number_trees = 500
+number_trees = 1000
 
-OSM_BUFFER = 25
+OSM_BUFFER = 35
 
 
 class RFTruckDetector:
@@ -40,31 +42,53 @@ class RFTruckDetector:
         print("RF accuracy: %s" % accuracy)
         self.rf_model = rf
 
-    def preprocess_bands(self, band_stack, dir_osm):
+    def preprocess_bands(self, band_stack, dir_osm, subset_box=None):
         band_stack = band_stack[0:4]
+        band_stack[np.isnan(band_stack)] = 0
         bands_rescaled = rescale(band_stack.copy(), 0, 1)
+        bands_rescaled[bands_rescaled == 0] = np.nan
+        slope_red_given = linregress(bands_rescaled[0][~np.isnan(bands_rescaled[0])].flatten(),
+                                     bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
+        slope_blue_given = linregress(bands_rescaled[2][~np.isnan(bands_rescaled[2])].flatten(),
+                                      bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
+        slope_nir_given = linregress(bands_rescaled[3][~np.isnan(bands_rescaled[3])].flatten(),
+                                     bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
+        bands_rescaled[0] *= slope_red_given / 0.8
+        bands_rescaled[2] *= slope_blue_given / 1.18
+        bands_rescaled[3] *= slope_nir_given / 0.5382611093959964
+        bands_rescaled[:, bands_rescaled[0] > np.nanquantile(bands_rescaled[0], [0.99])] = np.nan  # mask out upper 1 %
+        bands_rescaled[:, bands_rescaled[1] > np.nanquantile(bands_rescaled[1], [0.99])] = np.nan
+        bands_rescaled[:, bands_rescaled[2] > np.nanquantile(bands_rescaled[2], [0.99])] = np.nan
         band_stack = None
         self.lat, self.lon = lat_from_meta(self.meta), lon_from_meta(self.meta)
+        if subset_box is not None:
+            ymin, ymax, xmin, xmax = subset_box["ymin"], subset_box["ymax"], subset_box["xmin"], subset_box["xmax"]
+            bands_rescaled = bands_rescaled[:, ymin:ymax, xmin:xmax]
+            self.lat, self.lon = self.lat[ymin:ymax], self.lon[xmin:xmax]
+            self.meta["height"] = bands_rescaled.shape[1]
+            self.meta["width"] = bands_rescaled.shape[2]
         bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(self.meta)))
         osm_mask = self._get_osm_mask(bbox_epsg4326, self.meta["crs"], bands_rescaled[0], {"lat": self.lat,
                                                                                            "lon": self.lon},
                                       dir_osm)
         bands_rescaled *= osm_mask
         bands_rescaled[bands_rescaled == 0] = np.nan
+        osm_mask = None
         return bands_rescaled
 
     def predict(self, band_stack):
+        diffs = self.expose_anomalous_pixels(band_stack)
         t0 = datetime.now()
         shape = band_stack.shape
-        variables = np.zeros((shape[0] + 6, shape[1], shape[2]))
+        variables = np.zeros((shape[0] + 6, shape[1], shape[2]), dtype=np.float16)
         for band_idx in range(shape[0]):
             variables[band_idx] = band_stack[band_idx]
-        variables[-6] = np.nanstd(band_stack[0:3], 0)  # reflectance std
-        variables[-5] = normalized_ratio(band_stack[3], band_stack[0])  # NDVI
-        variables[-4] = normalized_ratio(band_stack[0], band_stack[2])  # red/blue
-        variables[-3] = normalized_ratio(band_stack[1], band_stack[0])  # green/red
-        variables[-2] = normalized_ratio(band_stack[2], band_stack[0])  # blue/red
-        variables[-1] = normalized_ratio(band_stack[1], band_stack[2])  # green/blue
+        variables[-6] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
+        variables[-5] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)  # NDVI
+        variables[-4] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
+        variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
+        variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
+        variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
         vars_reshaped = []
         for band_idx in range(variables.shape[0]):
             vars_reshaped.append(variables[band_idx].flatten())
@@ -103,15 +127,20 @@ class RFTruckDetector:
             new_value = 100
             # eliminate reds directly neighboring blue (only in preds copy), not 3x3 window -> only '+'
             for y_off, x_off in zip([-1, 0, 0, 1], [0, -1, 1, 0]):
-                this_y, this_x = half_idx_y + y_off, half_idx_x + x_off
+                this_y = np.clip(half_idx_y + y_off, 0, subset_15.shape[0] - 1)
+                this_x = np.clip(half_idx_x + x_off, 0, subset_15.shape[1] - 1)
                 if subset_15[this_y, this_x] == 4:
                     subset_15[this_y, this_x] = 0
+            if not all([value in subset_15 for value in [2, 3, 4]]):
+                continue
             cluster, yet_seen_indices, yet_seen_values = self._cluster_array(arr=subset_15,
                                                                              point=[half_idx_y, half_idx_x],
                                                                              new_value=new_value,
                                                                              current_value=current_value,
                                                                              yet_seen_indices=[],
                                                                              yet_seen_values=[])
+            if np.count_nonzero(cluster == new_value) < 3:
+                continue
             # add neighboring blue in 3x3 window around blue
             ys_blue_additional, xs_blue_additional = np.where(subset_3 == 2)
             ys_blue_additional += half_idx_y - 1  # get index in subset
@@ -128,9 +157,13 @@ class RFTruckDetector:
             # +1 on index because Polygon has to extent up to upper bound of pixel (array coords at upper left corner)
             ymax, xmax = np.max(cluster_ys) + 1, np.max(cluster_xs) + 1
             # check if blue, green and red are given in box and box is large enough, otherwise drop
-            box_preds = preds[ymin:ymax, xmin:xmax]
+            box_preds = predictions_raster[ymin:ymax, xmin:xmax]
+#            n_picks = [np.count_nonzero(np.array(box_preds) == value) for value in [2, 3, 4]]
+ #           if any([n > 10 for n in n_picks]):  # avoid too large objects
+  #              continue
             all_given = all([value in box_preds for value in [2, 3, 4]])
-            large_enough = (box_preds.shape[0] * box_preds.shape[1]) >= 3  # enough cells in box
+        #    large_enough = (box_preds.shape[0] * box_preds.shape[1]) >= 3  # enough cells in box
+            large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
             if not all_given or not large_enough:
                 continue
             # set cells from cluster and all blue cells to zero value in predictions array
@@ -139,12 +172,12 @@ class RFTruckDetector:
             lon_min, lat_min = self.lon[xmin], self.lat[ymin]
             try:
                 lon_max = self.lon[xmax]
-            except ValueError:  # may happen at edge of array
+            except IndexError:  # may happen at edge of array
                 # calculate next coordinate beyond array bound -> this is just the upper boundary of the box
                 lon_max = self.lon[-1] + (self.lon[-1] - self.lon[-2])
             try:
                 lat_max = self.lat[ymax]
-            except ValueError:
+            except IndexError:
                 lat_max = self.lat[-1] + (self.lat[-1] - self.lat[-2])
             cluster_box = Polygon(box(lon_min, lat_min, lon_max, lat_max))
             boxes.append(cluster_box)
@@ -199,6 +232,8 @@ class RFTruckDetector:
                 n_picks = [np.count_nonzero(np.array(yet_seen_values) == value) for value in [2, 3, 4]]
                 if n_picks[2] > n_picks[0] and n_picks[2] > n_picks[1]:
                     break  # finish clustering in order to avoid picking many reds at the edge of object
+                if any([n > 4 for n in n_picks]):
+                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values
                 arr_modified, yet_seen_indices, yet_seen_values = self._cluster_array(arr_modified, [y, x],
                                                                                       new_value,
                                                                                       current_value,
@@ -213,7 +248,7 @@ class RFTruckDetector:
                 self.meta = src.meta
                 if src.count < 4:
                     raise TypeError("Need 4 bands but %s given" % src.count)
-                band_stack = np.zeros((src.count, src.height, src.width))
+                band_stack = np.zeros((src.count, src.height, src.width), dtype=np.float32)
                 for band_idx in range(src.count):
                     band_stack[band_idx] = src.read(band_idx + 1)
         except rio.errors.RasterioIOError as e:
@@ -236,7 +271,7 @@ class RFTruckDetector:
             print("Could not write to %s" % file_path)
             raise e
         else:
-            print("Wrote to %s" % file_path)
+            print("Wrote to: %s" % file_path)
 
     def prediction_boxes_to_gpkg(self, prediction_boxes, file_path):
         self._write_boxes(file_path, prediction_boxes, ".gpkg")
@@ -254,7 +289,7 @@ class RFTruckDetector:
                      truth_data["green_red_ratio"],
                      truth_data["blue_red_ratio"],
                      truth_data["green_blue_ratio"]]
-        variables = np.float64(variables).swapaxes(0, 1)
+        variables = np.float32(variables).swapaxes(0, 1)
         vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.15)
         self.vars = dict(train=vars_train, test=vars_test)
         self.labels = dict(train=labels_train, test=labels_test)
@@ -290,11 +325,11 @@ class RFTruckDetector:
     @staticmethod
     def _get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
         osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
-                             dir_out, str(bbox).replace(", ", "_")[1:-1] + "_osm_roads", str(crs),
+                             dir_out, str(bbox).replace(", ", "_").replace("-", "minus")[1:-1] + "_osm_roads", str(crs),
                              reference_arr)
         osm_vec = gpd.read_file(osm_file)
         ref_xr = xr.DataArray(data=reference_arr, coords=lat_lon_dict, dims=["lat", "lon"])
-        osm_raster = rasterize_osm(osm_vec, ref_xr).astype(np.float32)
+        osm_raster = rasterize_osm(osm_vec, ref_xr).astype(np.float16)
         osm_raster[osm_raster != 0] = 1
         osm_raster[osm_raster == 0] = np.nan
         return osm_raster
@@ -315,15 +350,42 @@ class RFTruckDetector:
         else:
             print("Wrote to: %s" % file_path)
 
+    @staticmethod
+    def expose_anomalous_pixels(band_stack_np):
+        w = 1000
+        y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
+        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float16)
+        for y in range(int(np.round(y_bound / w))):
+            for x in range(int(np.round(x_bound / w))):
+                y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
+                y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
+                y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
+                y_size, x_size = (y_up - y_low), (x_up - x_low)
+                n = y_size * x_size
+                subset = band_stack_np[:, y_low:y_up, x_low:x_up]
+                roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
+                roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
+                roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
+        diff_red = np.float16(band_stack_np[0] - (roads[0] / 2))
+        diff_green = np.float16(band_stack_np[1] - (roads[1] / 2))
+        diff_blue = np.float16(band_stack_np[2] - (roads[2] / 2))
+        diff_stack = np.float16([diff_red, diff_green, diff_blue])
+        return diff_stack
+
 
 if __name__ == "__main__":
     rf_td = RFTruckDetector()
     rf_td._train(number_trees, truth_csv)
     bands = rf_td.read_bands(s2_file)
+    sub_box = {"ymin": 0, "ymax": 4000, "xmin": 0, "xmax": 6000}
     bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
+    test = rf_td.expose_anomalous_pixels(bands_preprocessed[0:3])
     predictions = rf_td.predict(bands_preprocessed)
     boxes = rf_td.extract_objects(predictions)
-    name = "test20"
+    try:
+        name = os.path.basename(s2_file).split("bands_")[1].split("_merged")[0]
+    except IndexError:
+        name = os.path.basename(s2_file).split(".")[0]
     rf_td.prediction_raster_to_gtiff(predictions, os.path.join(dirs["main"], name + "_raster.tiff"))
     rf_td.prediction_boxes_to_gpkg(boxes, os.path.join(dirs["main"], name + "_boxes.gpkg"))
 
