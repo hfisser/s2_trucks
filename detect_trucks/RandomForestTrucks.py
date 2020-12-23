@@ -55,8 +55,8 @@ class RFTruckDetector:
                 continue
         n_truth = len(truth_data)
         min_background, max_background = int(n_truth * 0.5), int(n_truth * 1.5)
-        truth_data = self.add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
-                                         int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 20, min_background,
+        truth_data = self._add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
+                                          int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 20, min_background,
                                              len(truth_data))))  # do not add too few or too many background points
         truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         truth_data.to_csv(truth_path_tmp)
@@ -98,7 +98,7 @@ class RFTruckDetector:
         vars_reshaped = np.array(vars_reshaped).swapaxes(0, 1)  # (n observations, n variables)
         nan_mask = np.zeros_like(vars_reshaped)
         for idx in range(vars_reshaped.shape[1]):
-            nan_mask[:, idx] = ~np.isnan(vars_reshaped[:, idx])  # exclude nans
+            nan_mask[:, idx] = ~np.isnan(vars_reshaped[:, idx])  # exclude nans. there should not be any but anyways
         not_nan = np.nanmin(nan_mask, 1).astype(np.bool)
         predictions_flat = self.rf_model.predict(vars_reshaped[not_nan])
         predictions_shaped = vars_reshaped[:, 0].copy()
@@ -354,7 +354,7 @@ class RFTruckDetector:
             print("Wrote to: %s" % file_path)
 
     @staticmethod
-    def add_background(out_pd, reflectances, ratios, ndvi, n_background):
+    def _add_background(out_pd, reflectances, ratios, ndvi, n_background):
         # pick random indices from non nans
         not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
         not_nan_ndvi = np.int8(~np.isnan(ndvi))
