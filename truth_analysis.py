@@ -26,7 +26,7 @@ n_clusters = 50  # number of RGB vector clusters
 overwrite_truth_csv = True
 training_percentage = 80
 
-OSM_BUFFER = 30
+OSM_BUFFER = 40
 
 
 def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_csv):
@@ -51,8 +51,6 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
     arr[np.isnan(arr)] = 0.
     arr = rescale(arr, 0, 1)
     arr[arr == 0] = np.nan
-    means = [np.nanmean(arr[j]) for j in range(arr.shape[0])]
-    diffs = expose_anomalous_pixels(arr[0:3])
     ndvi = normalized_ratio(arr[3], arr[0])
     n_bands = 3
     ratios = np.zeros((n_bands + 1, arr.shape[1], arr.shape[2]))
@@ -72,110 +70,12 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
-        sub_diffs = diffs[:, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratio_diffs = ratios_diffs[:, y0:y1 + 1, x0:x1 + 1].copy()
-        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, sub_diffs, sub_ratio_diffs,
-                                         ndvi[y0:y1 + 1, x0:x1 + 1])
+        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1 + 1, x0:x1 + 1])
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-      #  sub_arr_copy = sub_arr.copy()
-   #     sub_arr = rescale(sub_arr_copy.copy(), 0, 1)
-   #     ratios[-2] = np.nanstd(sub_arr[0:3], 0) * 10
-    #    ratios[-1] = np.nanstd(ratios, 0) * 10
-     #   blue_ratios = np.nansum(ratios[4:6], 0)
-     #   blue_max_ratio_idx = np.where(ratios[2] == np.nanmax(ratios[2]))
-    #    index = len(truth)
-   #     blue, green, red = sub_arr[2], sub_arr[1], sub_arr[0]
-  #      max_blue = blue.max()
- #       max_blue_index = get_indices(blue, max_blue)
-#        max_blue_y, max_blue_x = int(max_blue_index[0]), int(max_blue_index[1])
-        #blue_global = arr[2]
-        #not_nan = ~np.isnan(blue_global)
-        #blue_global_max = blue_global[y0 + max_blue_y, x0 + max_blue_x]
-        #n_not_nan = np.count_nonzero(blue_global[not_nan])
-        #percentage_below = np.count_nonzero(np.int8(blue_global[not_nan] <= blue_global_max)) / n_not_nan
-      #  max_blue_mask = np.ones_like(blue)  # mask out the blue marker position in red and green in order to avoid it
-     #   max_blue_mask[max_blue_y, max_blue_x] = 0
-    #    green, red = green * max_blue_mask, red * max_blue_mask
-   #     max_green, max_red = green.max(), red.max()
-  #      max_green_index = get_indices(green, max_green)
- #       max_red_index = get_indices(red, max_red)
-#        offset_green = np.abs((max_green_index - max_blue_index)).max()  # get max distance in pixels
-        #offset_red = np.abs((max_red_index - max_blue_index)).max()
-       # pseudo_detections = np.zeros_like(sub_arr[0])
-      #  pseudo_detections[max_blue_index[0], max_blue_index[1]] = 1
-     #   vector_test = calc_angles(sub_arr[0:3], ratios, pseudo_detections)
-    #    rgb_vector = vector_test["rgb_vector"]
-   #     bg_ratio = ratios[5]
-  #      br_ratio = ratios[4]
- #       rb_ratio = ratios[1]
-#        gb_ratio = ratios[3]
-   #     ndvi = normalized_ratio(sub_arr[3], sub_arr[0])
-  #      truth.loc[index, "image_file"] = img_file
- #       truth.loc[index, "box_number"] = i
-#        truth.loc[index, "max_red"] = np.nanmax(sub_arr_copy[0])
-       # truth.loc[index, "min_red"] = np.nanmin(sub_arr_copy[0])
-       # truth.loc[index, "mean_red"] = np.nanmean(sub_arr_copy[0])
-      #  truth.loc[index, "max_green"] = np.nanmax(sub_arr_copy[1])
-      #  truth.loc[index, "min_green"] = np.nanmin(sub_arr_copy[1])
-     #   truth.loc[index, "mean_green"] = np.nanmean(sub_arr_copy[1])
-    #    truth.loc[index, "max_blue"] = np.nanmax(sub_arr_copy[2])
-   #     truth.loc[index, "min_blue"] = np.nanmin(sub_arr_copy[2])
-  #      truth.loc[index, "mean_blue"] = np.nanmean(sub_arr_copy[2])
- #       truth.loc[index, "max_br_ratio"] = br_ratio.max()
-#        truth.loc[index, "min_br_ratio"] = br_ratio.min()
-        #truth.loc[index, "mean_br_ratio"] = br_ratio.mean()
-       # truth.loc[index, "max_bg_ratio"] = bg_ratio.max()
-      #  truth.loc[index, "min_bg_ratio"] = bg_ratio.min()
-     #   truth.loc[index, "mean_bg_ratio"] = bg_ratio.mean()
-    #    truth.loc[index, "max_rb_ratio"] = rb_ratio.max()
-   #     truth.loc[index, "min_rb_ratio"] = rb_ratio.min()
-  #      truth.loc[index, "mean_rb_ratio"] = rb_ratio.mean()
- #       truth.loc[index, "max_gb_ratio"] = gb_ratio.max()
-#        truth.loc[index, "min_gb_ratio"] = gb_ratio.min()
-        #truth.loc[index, "mean_gb_ratio"] = gb_ratio.mean()
-        #truth.loc[index, "min_ndvi"] = ndvi.min()
-       # truth.loc[index, "max_ndvi"] = ndvi.max()
-      #  truth.loc[index, "mean_ndvi"] = ndvi.mean()
-     #   truth.loc[index, "std_ndvi"] = ndvi.std()
-    #    truth.loc[index, "max_dist_green"] = offset_green
-   #     truth.loc[index, "max_dist_red"] = offset_red
-  #      truth.loc[index, "rgb_vector00"] = rgb_vector[0]
- #       truth.loc[index, "rgb_vector01"] = rgb_vector[1]
-#        truth.loc[index, "rgb_vector02"] = rgb_vector[2]
-       # truth.loc[index, "rgb_vector10"] = rgb_vector[3]
-        #truth.loc[index, "rgb_vector11"] = rgb_vector[4]
-     #   truth.loc[index, "rgb_vector12"] = rgb_vector[5]
-    #    truth.loc[index, "rgb_vector20"] = rgb_vector[6]
-      #  truth.loc[index, "rgb_vector21"] = rgb_vector[7]
-   #     truth.loc[index, "rgb_vector22"] = rgb_vector[8]
-  #      truth.loc[index, "rgb_vector30"] = rgb_vector[9]
- #       truth.loc[index, "rgb_vector31"] = rgb_vector[10]
-#        truth.loc[index, "rgb_vector32"] = rgb_vector[11]
-        #truth.loc[index, "rgb_vector40"] = rgb_vector[12]
-       # truth.loc[index, "rgb_vector41"] = rgb_vector[13]
-      #  truth.loc[index, "rgb_vector42"] = rgb_vector[14]
-     #   truth.loc[index, "rgb_vector50"] = rgb_vector[15]
-    #    truth.loc[index, "rgb_vector51"] = rgb_vector[16]
-   #     truth.loc[index, "rgb_vector52"] = rgb_vector[17]
-  #      truth.loc[index, "rgb_vector60"] = rgb_vector[18]
- #       truth.loc[index, "rgb_vector61"] = rgb_vector[19]
-#        truth.loc[index, "rgb_vector62"] = rgb_vector[20]
-       # truth.loc[index, "red_green_spatial_angle"] = vector_test["red_green_spatial_angle"]
-      #  truth.loc[index, "skewness"] = skew(sub_arr.flatten())
-      #  truth.loc[index, "kurtosis"] = kurtosis(sub_arr.flatten())
-      #  truth.loc[index, "std"] = np.nanmean(np.nanstd(sub_arr[0:3], 0)) * 10
-      #  truth.loc[index, "std_at_max_blue"] = np.nanstd(sub_arr_copy[0:3, blue_max_ratio_idx[0][0],
-      #                                                  blue_max_ratio_idx[1][0]], 0) * 10
-      #  truth.loc[index, "mean_var"] = np.nanmean(np.nanvar(sub_arr_copy[0:3], 0))
-     #   truth.loc[index, "std_var"] = np.nanstd(np.nanvar(sub_arr_copy[0:3], 0))
-    #    y, x = blue_max_ratio_idx[0][0], blue_max_ratio_idx[1][0]
-   #     spectra.loc[index, "b08"] = sub_arr[3, y, x]
-  #      spectra.loc[index, "b02"] = sub_arr_copy[2, y, x]
- #       spectra.loc[index, "b03"] = sub_arr_copy[1, y, x]
-#        spectra.loc[index, "b04"] = sub_arr_copy[0, y, x]
-    spectra_ml = add_background(spectra_ml, arr, ratios, diffs, ratios_diffs, ndvi, len(boxes_gpd) * 10)
-    print("Number of truth features in csv: %s" % (str(len(truth))))
+   # spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 4)
+    #print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
     spectra_ml.to_csv(spectra_ml_csv)
@@ -476,7 +376,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_differences, sub_ratio_differences, ndvi):
+def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, ndvi):
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
     red_criteria = sub_copy[0] + sub_ratios_copy[0]
@@ -506,12 +406,6 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_differe
         spectra_ml_pd.loc[row_idx, "green"] = sub_reflectances[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue"] = sub_reflectances[2, y, x]
         spectra_ml_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
-        spectra_ml_pd.loc[row_idx, "red_diff"] = sub_differences[0, y, x]
-        spectra_ml_pd.loc[row_idx, "green_diff"] = sub_differences[1, y, x]
-        spectra_ml_pd.loc[row_idx, "blue_diff"] = sub_differences[2, y, x]
-        spectra_ml_pd.loc[row_idx, "red_ratio_diff"] = sub_ratio_differences[0, y, x]
-        spectra_ml_pd.loc[row_idx, "green_ratio_diff"] = sub_ratio_differences[1, y, x]
-        spectra_ml_pd.loc[row_idx, "blue_ratio_diff"] = sub_ratio_differences[2, y, x]
         spectra_ml_pd.loc[row_idx, "reflectance_std"] = np.nanstd(sub_reflectances[0:3, y, x], 0)
         spectra_ml_pd.loc[row_idx, "ndvi"] = ndvi[y, x]
         spectra_ml_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
@@ -521,7 +415,7 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_differe
     return spectra_ml_pd
 
 
-def add_background(out_pd, reflectances, ratios, differences, ratio_differences, ndvi, n_background):
+def add_background(out_pd, reflectances, ratios, ndvi, n_background):
     # pick random indices from non nans
     not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
     not_nan_ndvi = np.int8(~np.isnan(ndvi))
@@ -538,12 +432,6 @@ def add_background(out_pd, reflectances, ratios, differences, ratio_differences,
         out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "red_diff"] = differences[0, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "green_diff"] = differences[1, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "blue_diff"] = differences[2, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "red_ratio_diff"] = ratio_differences[0, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "green_ratio_diff"] = ratio_differences[1, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "blue_ratio_diff"] = ratio_differences[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
         out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
