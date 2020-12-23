@@ -19,13 +19,13 @@ dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
-s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
+s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
+#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 
 truth_csv = os.path.join(dirs["truth"], "spectra_ml.csv")
-number_trees = 1000
+number_trees = 500
 
-OSM_BUFFER = 35
+OSM_BUFFER = 40
 
 
 class RFTruckDetector:
@@ -53,8 +53,11 @@ class RFTruckDetector:
                 truth_data.drop(background_idx, inplace=True)
             except KeyError:
                 continue
+        n_truth = len(truth_data)
+        min_background, max_background = int(n_truth * 0.5), int(n_truth * 1.5)
         truth_data = self.add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
-                                         int(len(truth_data)))
+                                         int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 20, min_background,
+                                             len(truth_data))))  # do not add too few or too many background points
         truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         truth_data.to_csv(truth_path_tmp)
         rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True)
