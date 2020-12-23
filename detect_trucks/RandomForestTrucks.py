@@ -18,8 +18,8 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
+#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 
 truth_csv = os.path.join(dirs["truth"], "spectra_ml.csv")
@@ -32,10 +32,33 @@ class RFTruckDetector:
     def __init__(self):
         self.rf_model = None
         self.lat, self.lon, self.meta = None, None, None
+        self.variables = None
 
-    def _train(self, n_trees, truth_path):
+    def train(self, n_trees, truth_path, band_stack):
+        shape = band_stack.shape
+        variables = np.zeros((shape[0] + 6, shape[1], shape[2]), dtype=np.float16)
+        for band_idx in range(shape[0]):
+            variables[band_idx] = band_stack[band_idx]
+        variables[-6] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
+        variables[-5] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)  # NDVI
+        variables[-4] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
+        variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
+        variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
+        variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        self.variables = variables
+        truth_data = pd.read_csv(truth_path, index_col=0)
+        background_indices = np.where(truth_data["label"] == "background")
+        for background_idx in background_indices:
+            try:
+                truth_data.drop(background_idx, inplace=True)
+            except KeyError:
+                continue
+        truth_data = self.add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
+                                         int(len(truth_data)))
+        truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
+        truth_data.to_csv(truth_path_tmp)
         rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True)
-        self._prepare_truth(truth_path)
+        self._prepare_truth(truth_path_tmp)
         rf.fit(self.vars["train"], self.labels["train"])
         test_pred = rf.predict(self.vars["test"])
         accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
@@ -47,18 +70,6 @@ class RFTruckDetector:
         band_stack[np.isnan(band_stack)] = 0
         bands_rescaled = rescale(band_stack.copy(), 0, 1)
         bands_rescaled[bands_rescaled == 0] = np.nan
-        slope_red_given = linregress(bands_rescaled[0][~np.isnan(bands_rescaled[0])].flatten(),
-                                     bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
-        slope_blue_given = linregress(bands_rescaled[2][~np.isnan(bands_rescaled[2])].flatten(),
-                                      bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
-        slope_nir_given = linregress(bands_rescaled[3][~np.isnan(bands_rescaled[3])].flatten(),
-                                     bands_rescaled[1][~np.isnan(bands_rescaled[1])].flatten()).slope
-        bands_rescaled[0] *= slope_red_given / 0.8
-        bands_rescaled[2] *= slope_blue_given / 1.18
-        bands_rescaled[3] *= slope_nir_given / 0.5382611093959964
-        bands_rescaled[:, bands_rescaled[0] > np.nanquantile(bands_rescaled[0], [0.99])] = np.nan  # mask out upper 1 %
-        bands_rescaled[:, bands_rescaled[1] > np.nanquantile(bands_rescaled[1], [0.99])] = np.nan
-        bands_rescaled[:, bands_rescaled[2] > np.nanquantile(bands_rescaled[2], [0.99])] = np.nan
         band_stack = None
         self.lat, self.lon = lat_from_meta(self.meta), lon_from_meta(self.meta)
         if subset_box is not None:
@@ -76,22 +87,11 @@ class RFTruckDetector:
         osm_mask = None
         return bands_rescaled
 
-    def predict(self, band_stack):
-        diffs = self.expose_anomalous_pixels(band_stack)
+    def predict(self):
         t0 = datetime.now()
-        shape = band_stack.shape
-        variables = np.zeros((shape[0] + 6, shape[1], shape[2]), dtype=np.float16)
-        for band_idx in range(shape[0]):
-            variables[band_idx] = band_stack[band_idx]
-        variables[-6] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
-        variables[-5] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)  # NDVI
-        variables[-4] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
-        variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
-        variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
-        variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
         vars_reshaped = []
-        for band_idx in range(variables.shape[0]):
-            vars_reshaped.append(variables[band_idx].flatten())
+        for band_idx in range(self.variables.shape[0]):
+            vars_reshaped.append(self.variables[band_idx].flatten())
         vars_reshaped = np.array(vars_reshaped).swapaxes(0, 1)  # (n observations, n variables)
         nan_mask = np.zeros_like(vars_reshaped)
         for idx in range(vars_reshaped.shape[1]):
@@ -100,7 +100,7 @@ class RFTruckDetector:
         predictions_flat = self.rf_model.predict(vars_reshaped[not_nan])
         predictions_shaped = vars_reshaped[:, 0].copy()
         predictions_shaped[not_nan] = predictions_flat
-        predictions_shaped = predictions_shaped.reshape((variables.shape[1], variables.shape[2]))
+        predictions_shaped = predictions_shaped.reshape((self.variables.shape[1], self.variables.shape[2]))
         predictions_shaped[predictions_shaped < 1] = np.nan
         self._elapsed(t0)
         return predictions_shaped.astype(np.int8)
@@ -351,36 +351,40 @@ class RFTruckDetector:
             print("Wrote to: %s" % file_path)
 
     @staticmethod
-    def expose_anomalous_pixels(band_stack_np):
-        w = 1000
-        y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
-        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float16)
-        for y in range(int(np.round(y_bound / w))):
-            for x in range(int(np.round(x_bound / w))):
-                y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
-                y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
-                y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
-                y_size, x_size = (y_up - y_low), (x_up - x_low)
-                n = y_size * x_size
-                subset = band_stack_np[:, y_low:y_up, x_low:x_up]
-                roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
-                roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
-                roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-        diff_red = np.float16(band_stack_np[0] - (roads[0] / 2))
-        diff_green = np.float16(band_stack_np[1] - (roads[1] / 2))
-        diff_blue = np.float16(band_stack_np[2] - (roads[2] / 2))
-        diff_stack = np.float16([diff_red, diff_green, diff_blue])
-        return diff_stack
+    def add_background(out_pd, reflectances, ratios, ndvi, n_background):
+        # pick random indices from non nans
+        not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
+        not_nan_ndvi = np.int8(~np.isnan(ndvi))
+        not_nan_ratios = np.int8(~np.isnan(ratios))
+        not_nan = np.min(not_nan_reflectances, 0) * not_nan_ndvi * np.min(not_nan_ratios, 0)
+        not_nan_y, not_nan_x = np.where(not_nan == 1)
+        random_indices = np.random.randint(0, len(not_nan_y), n_background)
+        row_idx = len(out_pd)
+        for random_idx in zip(random_indices):
+            y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
+            out_pd.loc[row_idx, "label_int"] = 1
+            out_pd.loc[row_idx, "label"] = "background"
+            out_pd.loc[row_idx, "red"] = reflectances[0, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
+            out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "green_blue_ratio"] = ratios[3, y_arr_idx, x_arr_idx]
+            row_idx += 1
+        return out_pd
 
 
 if __name__ == "__main__":
     rf_td = RFTruckDetector()
-    rf_td._train(number_trees, truth_csv)
     bands = rf_td.read_bands(s2_file)
     sub_box = {"ymin": 0, "ymax": 4000, "xmin": 0, "xmax": 6000}
     bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
-    test = rf_td.expose_anomalous_pixels(bands_preprocessed[0:3])
-    predictions = rf_td.predict(bands_preprocessed)
+    rf_td.train(number_trees, truth_csv, bands_preprocessed)
+    predictions = rf_td.predict()
     boxes = rf_td.extract_objects(predictions)
     try:
         name = os.path.basename(s2_file).split("bands_")[1].split("_merged")[0]
@@ -388,19 +392,3 @@ if __name__ == "__main__":
         name = os.path.basename(s2_file).split(".")[0]
     rf_td.prediction_raster_to_gtiff(predictions, os.path.join(dirs["main"], name + "_raster.tiff"))
     rf_td.prediction_boxes_to_gpkg(boxes, os.path.join(dirs["main"], name + "_boxes.gpkg"))
-
-
-#    meta["count"] = 1
- #   meta["dtype"] = predictions.dtype
-  #  with rio.open(os.path.join(dirs["main"], "test8.tiff"), "w", **meta) as tgt:
-   #     tgt.write(predictions, 1)
-
-
-#    self = random_forest
- #   with rio.open(os.path.join(dirs["main"], "test8.tiff"), "r") as tgt:
-  #      predictions_raster = tgt.read(1)
-  #  preds = predictions_raster.copy()
-   # blue_ys, blue_xs = np.where(preds == 2)
-    #n_blues = len(blue_ys)
-    #blue_y, blue_x = blue_ys[0], blue_xs[0]
-    #import matplotlib.pyplot as plt
