@@ -18,6 +18,7 @@ dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
+
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 
@@ -53,10 +54,11 @@ class RFTruckDetector:
             except KeyError:
                 continue
         n_truth = len(truth_data)
-        min_background, max_background = int(n_truth * 0.5), n_truth
+        min_background, max_background = int(n_truth * 0.1), n_truth
         truth_data = self._add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
-                                          int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 20, min_background,
-                                              max_background)))  # do not add too few or too many background points
+                                          int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 40,
+                                                      min_background,
+                                                      max_background)))  # do not add too little or too much background
         truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         truth_data.to_csv(truth_path_tmp)
         rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True)
@@ -160,11 +162,7 @@ class RFTruckDetector:
             ymax, xmax = np.max(cluster_ys) + 1, np.max(cluster_xs) + 1
             # check if blue, green and red are given in box and box is large enough, otherwise drop
             box_preds = predictions_raster[ymin:ymax, xmin:xmax]
-#            n_picks = [np.count_nonzero(np.array(box_preds) == value) for value in [2, 3, 4]]
- #           if any([n > 10 for n in n_picks]):  # avoid too large objects
-  #              continue
             all_given = all([value in box_preds for value in [2, 3, 4]])
-        #    large_enough = (box_preds.shape[0] * box_preds.shape[1]) >= 3  # enough cells in box
             large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
             if not all_given or not large_enough:
                 continue
