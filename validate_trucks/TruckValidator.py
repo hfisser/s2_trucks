@@ -1,5 +1,5 @@
 import os
-import utm
+import time
 import requests
 import shutil
 import numpy as np
@@ -14,15 +14,15 @@ from shapely.geometry.linestring import LineString
 from rasterio.merge import merge
 
 from osm_utils.utils import get_roads, rasterize_osm
-from vector_utils.geocoding import utm_to_4326
 from array_utils.points import raster_to_points
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
-from detect_trucks.TruckDetector import Detector
-from detect_trucks.TruckDetector2 import Detector2
+from detect_trucks.RandomForestTrucks import RFTruckDetector
 
-dir_validation = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation"
-dir_osm = os.path.join(os.path.dirname(dir_validation), "data", "osm")
+dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
+dir_validation = os.path.join(dir_main, "validation")
+dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
+truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
 aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
 
 
@@ -51,7 +51,11 @@ stations = {"Theeßen (3810)": ["2018-11-28", "2018-11-28"],
             "Crailsheim-Süd (8827)": ["2018-04-27", "2018-04-27"]}  # Bundesstraße
 
 
-stations = {list(stations.keys())[0]: list(stations.values())[0]}
+#stations = {list(stations.keys())[0]: list(stations.values())[0],
+ #           list(stations.keys())[1]: list(stations.values())[1],
+  #          list(stations.keys())[2]: list(stations.values())[2]}
+
+stations = {list(stations.keys())[3]: list(stations.values())[3]}
 
 
 class Validator:
@@ -60,7 +64,7 @@ class Validator:
         self.dirs = {"validation": dir_validation_home, "osm": dir_osm_data,
                      "station_counts": os.path.join(dir_validation_home, "data", "BAST", "station_counts"),
                      "s2": os.path.join(dir_validation_home, "data", "s2"),
-                     "detections": os.path.join(dir_validation, "detections")}
+                     "detections": os.path.join(dir_validation_home, "detections")}
         for directory in self.dirs.values():
             if not os.path.exists(directory):
                 os.mkdir(directory)
@@ -69,12 +73,12 @@ class Validator:
         self.station_name_clear = self.station_name.split(" (")[0]
         self.station_meta = self.get_station_meta(station_name)
         bbox = aois[aois["Name"] == station_name].geometry.bounds
-        self.bbox_epsg4326 = (bbox.miny[0], bbox.minx[0], bbox.maxy[0], bbox.maxx[0])  # min lat, min lon, max lat, max lon
+        self.bbox_epsg4326 = (float(bbox.miny), float(bbox.minx), float(bbox.maxy), float(bbox.maxx))  # min lat, min lon, max lat, max lon
         self.crs = aois.crs
         self.lat, self.lon = None, None
         self.detections, self.osm_roads = None, None
         self.date = None
-        self.detections_files, self.s2_data_file = [], None
+        self.detections_file, self.s2_data_file = "", None
 
     def detect(self, period):
         self.date = period[0]
@@ -110,6 +114,11 @@ class Validator:
                 else:
                     folder = folders[0]
                     reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
+                    if os.path.exists(folder) and os.path.exists(curr_s2_data_file):
+                        shutil.rmtree(folder)  # remove original download file
+                    else:
+                        time.sleep(10)
+                        shutil.rmtree(folder)
          #   try:
         with rio.open(files[0], "r") as src:
             meta = src.meta  # get meta
@@ -121,7 +130,7 @@ class Validator:
             with rio.open(merged_file, "w", **meta) as tgt:
                 for i in range(merged_stack.shape[0]):
                     tgt.write(merged_stack[i], i+1)
-        curr_detections_file = os.path.join(self.dirs["detections"], "test17_s2_detections_%s_%s.gpkg" %
+        detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
                                             (self.date, self.station_name_clear))
         if 0: #os.path.exists(curr_detections_file):
             pass
@@ -135,50 +144,32 @@ class Validator:
             except rio.errors.RasterioIOError as e:
                 raise e
             band_stack_np = band_stack_np.swapaxes(0, 2).swapaxes(1, 2)  # z, y, x
-            #detector = Detector()
-            detector = Detector2()
-            detector.min_score = 0.5
+            detector = RFTruckDetector()
+            band_stack = detector.read_bands(merged_file)
             # transform to EPSG:4326
             t, epsg_4326 = meta["transform"], "EPSG:4326"
-            #sub = {"ymin": 800, "ymax": band_stack_np.shape[1], "xmin": 0, "xmax": band_stack_np.shape[2]}
-            band_stack_np = detector.pre_process({"B08": band_stack_np[3], "B04": band_stack_np[0],
-                                                  "B03": band_stack_np[1], "B02": band_stack_np[2]}, meta)
-          #  curr_detections = detector.detect_trucks(band_stack_np)
-            var = detector.reveal_trucks(band_stack_np)
-            meta["dtype"] = np.float64
-            meta["count"] = 1
-    #        with rio.open(os.path.join(dir_validation, "mask.tiff"), "w", **meta) as tgt:
-     #           tgt.write(mask, 1)
-               # for idx in range(detector.band_stack_np.shape[0]):
-                #    tgt.write(np.float64(detector.band_stack_np[idx]), idx+1)
-
+            bands_preprocessed = detector.preprocess_bands(band_stack, dir_osm)
+            detector.train(bands_preprocessed, truth_csv)
+            prediction = detector.predict()
+            prediction_boxes = detector.extract_objects(prediction)
+            detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
             station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
             station_file = station_folder + "_%s.csv" % str(year)
-            station_counts_csv = os.path.join(self.dirs["station_counts"], station_folder, station_file)
-            detector.calibrate(station_counts_csv, self.station_name,
-                               os.path.join(dir_validation, "calibration.csv"), self.date, hour)
-         #   curr_detections.to_file(curr_detections_file, driver="GPKG")
-            self.detections_files.append(curr_detections_file)
-            # decrease size of reference lat, lon raster in order to calculate road distances on it
+            self.detections_file = detections_file
             lats.append(lat_from_meta(meta))
             lons.append(lon_from_meta(meta))
             detector, band_stack_np = None, None
-            if os.path.exists(folder):
-                shutil.rmtree(folder)  # remove original download file
         self.lat = np.sort(np.unique(lats))[::-1]
         self.lon = np.sort(np.unique(lons))
 
     def validate(self):
-        # read all detection files (may be multiple due to box splitting)
-        all_detections = []
-        for detection_file in self.detections_files:
-            all_detections.append(gpd.read_file(detection_file))
-        self.detections = pd.concat(all_detections)
-        self.prepare_s2_counts()
         try:
             validation_pd = pd.read_csv(self.validation_file)
         except FileNotFoundError:
             validation_pd = pd.DataFrame()
+        speed = 90
+        self.detections = gpd.read_file(self.detections_file)
+        self.prepare_s2_counts()
         hour_proportion = (minutes / 60)
         station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
         station_file = station_folder + "_%s.csv" % str(year)
@@ -186,7 +177,7 @@ class Validator:
         station_point = Point([self.station_meta["x"], self.station_meta["y"]])
         ref = xr.DataArray(np.zeros((len(self.lat), len(self.lon))),  coords={"lat": self.lat, "lon": self.lon},
                            dims=("lat", "lon"))
-        osm_raster_aggregated = self.max_aggregate(rasterize_osm(self.osm_roads, ref), 50)
+        osm_raster_aggregated = self.max_aggregate(rasterize_osm(self.osm_roads, ref), 200)
         osm_raster_aggregated[~np.isnan(osm_raster_aggregated) * osm_raster_aggregated != 0] = 1
         # downsample lat lon to aggregated osm roads
         shape_new = osm_raster_aggregated.shape
@@ -194,11 +185,7 @@ class Validator:
         lon_aggregated = np.arange(self.lon[0], self.lon[-1], (self.lon[-1] - self.lon[0]) / shape_new[1])
         # create point grid in aoi
         road_points = raster_to_points(osm_raster_aggregated, {"lat": lat_aggregated, "lon": lon_aggregated},
-                                       "id", "EPSG:" + str(all_detections[0].crs.to_epsg()))
-        # subset points to osm road polygons in order to construct line from detection to station
-     #   road_points_clipped = gpd.sjoin(road_points,
-      #                                  gpd.GeoDataFrame({"id": [0]}, geometry=[self.osm_roads.unary_union]),
-       #                                 "left", "within")
+                                       "id", "EPSG:" + str(self.detections.crs.to_epsg()))
         detections_in_reach = []
         for detection in self.detections.iterrows():
             detection = detection[1]
@@ -208,26 +195,23 @@ class Validator:
             station_y, station_x = station_point.y, station_point.x
             sorted_ys = np.sort([detection_y, station_y])
             sorted_xs = np.sort([detection_x, station_x])
-      #      for road_point in road_points.geometry:
-       #         if sorted_ys[0] < road_point.y > sorted_ys[1] and sorted_xs[0] < road_point.x > sorted_xs[1]:
-        #            points_between_detection_and_station.append(road_point)
-         #   line_to_detection = LineString(points_between_detection_and_station)  # create line from detection to station
-            traveled_distance = 90 * hour_proportion  #detection["speed"] * hour_proportion
+            for road_point in road_points.geometry:
+                if sorted_ys[0] < road_point.y > sorted_ys[1] and sorted_xs[0] < road_point.x > sorted_xs[1]:
+                    points_between_detection_and_station.append(road_point)
+            try:
+                line_to_detection = LineString(points_between_detection_and_station)  # create line from detection to station
+            except ValueError:
+                continue
+            traveled_distance = speed * hour_proportion
             line_to_detection = LineString([detection_point, station_point])
             # passed by the station in number of minutes
             distance_matching = traveled_distance >= line_to_detection.length / 1000
-            if distance_matching:
-                detections_in_reach.append(detection)
-            else:
-                continue
-
             if not distance_matching:
                 continue
             # check direct line to detection and compare with vehicle heading (only include if heading away)
             direct_vector_to_detection = self.calc_vector([station_y, station_x], [detection_y, detection_x])
             # calculate in which direction the station is
             direction_bins = np.arange(0, 359, 22.5, dtype=np.float32)
-#            offset = int(len(direction_bins) / 4)
             station_direction = self.calc_vector_direction_in_degree(direct_vector_to_detection)
             diffs = np.abs(direction_bins - station_direction)
             lowest_diff_idx = np.where(diffs == diffs.min())[0][0]
@@ -235,9 +219,9 @@ class Validator:
             up = lowest_diff_idx + 4
             up = up - len(direction_bins) if up >= len(direction_bins) else up
             direction_range = np.sort([direction_bins[lowest_diff_idx - 4], direction_bins[int(up)]])
-            # check if vehicle is traveling from station (count it) or to station (drop it)
+            # check if vehicle is traveling from station (count) or to station (drop)
             direction_matching = direction_range[0] < detection["direction_degree"] < direction_range[1]
-            if distance_matching and direction_matching:
+            if direction_matching:
                 detections_in_reach.append(detection)
         # compare number of detections in reach to the one of count station
         date_station_format = self.date[2:].replace("-", "")  # e.g. "2018-12-31" -> "181231"
@@ -245,12 +229,15 @@ class Validator:
         station_counts_hour = station_counts[time_match]
         idx = len(validation_pd)
         for key, value in {"station_file": station_file, "s2_counts_file": self.s2_data_file,
-                           "detections_file": self.detections_files,
+                           "detections_file": self.detections_file,
                            "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach)}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
             # add counts proportional to number of minutes
-            validation_pd.loc[idx, column] = [station_counts_hour[column].iloc[0] * hour_proportion]
+            try:
+                validation_pd.loc[idx, column] = [station_counts_hour[column].iloc[0] * hour_proportion]
+            except TypeError:
+                validation_pd.loc[idx, column] = np.nan
         validation_pd.to_csv(self.validation_file)
 
     def prepare_s2_counts(self):
@@ -276,7 +263,7 @@ class Validator:
             row = row[1]
             if row.geometry.intersects(osm_union):
                 detections_within.append(row)
-        self.detections = gpd.GeoDataFrame(detections_within)
+        self.detections = gpd.GeoDataFrame(detections_within, crs=self.detections.crs)
 
     @staticmethod
     def get_station_meta(station_name):
@@ -358,8 +345,9 @@ class Validator:
 
 
 if __name__ == "__main__":
+    os.remove(os.path.join(dir_validation, "validation_run.csv"))
     for station, acquisition_period in stations.items():
-        print("Validating at station: %s" % station)
+        print("Station: %s" % station)
         validator = Validator(station, aois_file, dir_validation, dir_osm)
         validator.detect(acquisition_period)
         validator.validate()
