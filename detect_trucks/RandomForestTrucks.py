@@ -5,9 +5,11 @@ import numpy as np
 import rasterio as rio
 import xarray as xr
 from datetime import datetime
+from glob import glob
 from shapely.geometry import Polygon, box
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
 from array_utils.math import rescale, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
@@ -17,15 +19,25 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
+dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
+s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
+training_tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T37MCT", "T36RUU", "T35JPM"]
 
+do_tuning = True
 truth_csv = os.path.join(dirs["truth"], "spectra_ml.csv")
-number_trees = 500
 
 OSM_BUFFER = 40
+
+# RF hyper parameters from hyper parameter tuning
+N_ESTIMATORS = 800
+MIN_SAMPLES_SPLIT = 5
+MIN_SAMPLES_LEAF = 1
+MAX_FEATURES = "sqrt"
+MAX_DEPTH = 90
+BOOTSTRAP = False
 
 
 class RFTruckDetector:
@@ -35,39 +47,51 @@ class RFTruckDetector:
         self.variables = None
 
     def train(self, n_trees, truth_path, band_stack):
-        shape = band_stack.shape
-        variables = np.zeros((shape[0] + 6, shape[1], shape[2]), dtype=np.float16)
-        for band_idx in range(shape[0]):
-            variables[band_idx] = band_stack[band_idx]
-        variables[-6] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
-        variables[-5] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)  # NDVI
-        variables[-4] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
-        variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
-        variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
-        variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        variables = self._build_variables(band_stack)
         self.variables = variables
-        truth_data = pd.read_csv(truth_path, index_col=0)
-        background_indices = np.where(truth_data["label"] == "background")
-        for background_idx in background_indices:
-            try:
-                truth_data.drop(background_idx, inplace=True)
-            except KeyError:
-                continue
-        n_truth = len(truth_data)
-        min_background, max_background = int(n_truth * 0.1), n_truth
-        truth_data = self._add_background(truth_data, variables[0:4], variables[-4:], variables[-5],
-                                          int(np.clip(np.count_nonzero(~np.isnan(variables[0])) / 40,
-                                                      min_background,
-                                                      max_background)))  # do not add too little or too much background
-        truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
-        truth_data.to_csv(truth_path_tmp)
-        rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True)
-        self._prepare_truth(truth_path_tmp)
+        self._split_train_test(self._prepare_truth(truth_path))
+        rf = RandomForestClassifier(n_estimators=N_ESTIMATORS,
+                                    min_samples_split=MIN_SAMPLES_SPLIT,
+                                    min_samples_leaf=MIN_SAMPLES_LEAF,
+                                    max_features=MAX_FEATURES,
+                                    max_depth=MAX_DEPTH,
+                                    bootstrap=BOOTSTRAP,
+                                    oob_score=True)
         rf.fit(self.vars["train"], self.labels["train"])
         test_pred = rf.predict(self.vars["test"])
         accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
         print("RF accuracy: %s" % accuracy)
         self.rf_model = rf
+
+    def tune(self, truth_tmp_path, tuning_path):
+        self._split_train_test(truth_tmp_path)
+        tuning_pd = pd.DataFrame()
+        n_trees = list(np.int16(np.linspace(start=200, stop=2000, num=10)))
+        max_features = ["auto", "sqrt"]
+        max_depth = list(np.int16(np.linspace(10, 110, num=11)))
+        max_depth.append(None)
+        min_samples_split = [2, 5, 10]
+        min_samples_leaf = [1, 2, 4]
+        bootstrap = [True, False]  # Create the random grid
+        hyper_hyper = {"n_estimators": n_trees,
+                       "max_features": max_features,
+                       "max_depth": max_depth,
+                       "min_samples_split": min_samples_split,
+                       "min_samples_leaf": min_samples_leaf,
+                       "bootstrap": bootstrap}
+        rf = RandomForestClassifier()
+        rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper, n_iter=100, cv=3, verbose=2,
+                                       random_state=42, n_jobs=-1)
+        rf_random.fit(self.vars["train"], self.labels["train"])
+        for key, value in rf_random.best_params_.items():
+            tuning_pd[key] = [value]
+        tuning_pd.to_csv(tuning_path)
+
+    def extract_background_for_tuning(self, truth_path, band_stack):
+        variables = self._build_variables(band_stack)
+        self.variables = variables
+        truth_path_tmp = self._prepare_truth(truth_path)
+        return pd.read_csv(truth_path_tmp, index_col=0)
 
     def preprocess_bands(self, band_stack, dir_osm, subset_box=None):
         band_stack = band_stack[0:4]
@@ -164,7 +188,9 @@ class RFTruckDetector:
             box_preds = predictions_raster[ymin:ymax, xmin:xmax]
             all_given = all([value in box_preds for value in [2, 3, 4]])
             large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
-            if not all_given or not large_enough:
+            too_large = box_preds.shape[0] > 5 or box_preds.shape[1] > 5
+            too_large *= box_preds.shape[0] > 4 and box_preds.shape[1] > 4
+            if too_large or not all_given or not large_enough:
                 continue
             # set cells from cluster and all blue cells to zero value in predictions array
             preds[ymin:ymax, xmin:xmax] = np.int8(box_preds != 2)  # set blue cells in preds within box to zero
@@ -281,6 +307,21 @@ class RFTruckDetector:
 
     def _prepare_truth(self, truth_path):
         truth_data = pd.read_csv(truth_path, index_col=0)
+        background_indices = np.where(truth_data["label"] == "background")
+        for background_idx in background_indices:
+            try:
+                truth_data.drop(background_idx, inplace=True)
+            except KeyError:
+                continue
+        n_truth = len(truth_data)
+        truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
+                                          n_truth)
+        truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
+        truth_data.to_csv(truth_path_tmp)
+        return truth_path_tmp
+
+    def _split_train_test(self, truth_path_tmp):
+        truth_data = pd.read_csv(truth_path_tmp, index_col=0)
         labels = truth_data["label_int"]
         variables = [truth_data["red"], truth_data["green"], truth_data["blue"], truth_data["nir"],
                      truth_data["reflectance_std"],
@@ -290,9 +331,23 @@ class RFTruckDetector:
                      truth_data["blue_red_ratio"],
                      truth_data["green_blue_ratio"]]
         variables = np.float32(variables).swapaxes(0, 1)
-        vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.15)
+        vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.2)
         self.vars = dict(train=vars_train, test=vars_test)
         self.labels = dict(train=labels_train, test=labels_test)
+
+    @staticmethod
+    def _build_variables(band_stack):
+        shape = band_stack.shape
+        variables = np.zeros((shape[0] + 6, shape[1], shape[2]), dtype=np.float16)
+        for band_idx in range(shape[0]):
+            variables[band_idx] = band_stack[band_idx]
+        variables[-6] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
+        variables[-5] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)  # NDVI
+        variables[-4] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
+        variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
+        variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
+        variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        return variables
 
     @staticmethod
     def _get_arr_subset(arr, y, x, size):
@@ -351,13 +406,17 @@ class RFTruckDetector:
             print("Wrote to: %s" % file_path)
 
     @staticmethod
-    def _add_background(out_pd, reflectances, ratios, ndvi, n_background):
+    def _add_background(out_pd, reflectances, ratios, ndvi, n_truth):
         # pick random indices from non nans
         not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
         not_nan_ndvi = np.int8(~np.isnan(ndvi))
         not_nan_ratios = np.int8(~np.isnan(ratios))
         not_nan = np.min(not_nan_reflectances, 0) * not_nan_ndvi * np.min(not_nan_ratios, 0)
+        min_background, max_background = int(n_truth * 0.1), n_truth
         not_nan_y, not_nan_x = np.where(not_nan == 1)
+        n_background = int(np.clip(np.count_nonzero(not_nan == 1) * 0.01,
+                                   min_background,
+                                   max_background))
         random_indices = np.random.randint(0, len(not_nan_y), n_background)
         row_idx = len(out_pd)
         for random_idx in zip(random_indices):
@@ -379,16 +438,30 @@ class RFTruckDetector:
 
 
 if __name__ == "__main__":
-    rf_td = RFTruckDetector()
-    bands = rf_td.read_bands(s2_file)
-    sub_box = {"ymin": 0, "ymax": 4000, "xmin": 0, "xmax": 6000}
-    bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
-    rf_td.train(number_trees, truth_csv, bands_preprocessed)
-    predictions = rf_td.predict()
-    boxes = rf_td.extract_objects(predictions)
-    try:
-        name = os.path.basename(s2_file).split("bands_")[1].split("_merged")[0]
-    except IndexError:
-        name = os.path.basename(s2_file).split(".")[0]
-    rf_td.prediction_raster_to_gtiff(predictions, os.path.join(dirs["main"], name + "_raster.tiff"))
-    rf_td.prediction_boxes_to_gpkg(boxes, os.path.join(dirs["main"], name + "_boxes.gpkg"))
+    if do_tuning:
+        tile_spectra = []   # training spectra of all tiles
+        rf_td = RFTruckDetector()
+        for tile in training_tiles:
+            print(tile)
+            imgs = np.array(glob(dirs["imgs"] + os.sep + "*" + tile + "*.tif"))
+            lens = np.int32([len(x) for x in imgs])
+            bands = rf_td.read_bands(imgs[np.where(lens == lens.min())[0]][0])
+            bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
+            tile_spectra.append(rf_td.extract_background_for_tuning(truth_csv, bands_preprocessed))
+            bands_preprocessed = None
+        truth_tmp_csv = os.path.join(dirs["truth"], "truth_tmp.csv")
+        pd.concat(tile_spectra).to_csv(truth_tmp_csv)
+        rf_td.tune(truth_tmp_csv, os.path.join(dirs["truth"], "tuning.csv"))
+    else:
+        rf_td = RFTruckDetector()
+        bands = rf_td.read_bands(s2_file)
+        bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
+        rf_td.train(number_trees, truth_csv, bands_preprocessed)
+        predictions = rf_td.predict()
+        boxes = rf_td.extract_objects(predictions)
+        try:
+            name = os.path.basename(s2_file).split("bands_")[1].split("_merged")[0]
+        except IndexError:
+            name = os.path.basename(s2_file).split(".")[0]
+        rf_td.prediction_raster_to_gtiff(predictions, os.path.join(dirs["main"], name + "_raster.tiff"))
+        rf_td.prediction_boxes_to_gpkg(boxes, os.path.join(dirs["main"], name + "_boxes.gpkg"))
