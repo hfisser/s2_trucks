@@ -6,6 +6,9 @@ import rasterio as rio
 import xarray as xr
 from datetime import datetime
 from glob import glob
+from shutil import rmtree
+from rasterio.transform import Affine
+from rasterio.merge import merge
 from shapely.geometry import Polygon, box
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
@@ -21,12 +24,14 @@ dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archiv
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 
 s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 training_tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T37MCT", "T36RUU", "T35JPM"]
 
-do_tuning = True
+do_tuning = False
 truth_csv = os.path.join(dirs["truth"], "spectra_ml.csv")
 
 OSM_BUFFER = 40
@@ -39,6 +44,8 @@ MAX_FEATURES = "sqrt"
 MAX_DEPTH = 90
 BOOTSTRAP = False
 
+SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
+
 
 class RFTruckDetector:
     def __init__(self):
@@ -46,17 +53,70 @@ class RFTruckDetector:
         self.lat, self.lon, self.meta = None, None, None
         self.variables = None
 
-    def train(self, n_trees, truth_path, band_stack):
+    def run(self, band_stack, truth_path):
+        tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+        try:
+            os.mkdir(tmp_dir)
+        except FileExistsError:
+            pass
+        sub_size = 2000
+        n_y_subsets = int(band_stack.shape[1] / sub_size + 1)
+        n_x_subsets = int(band_stack.shape[2] / sub_size + 1)
+        all_detections, tmp_files = [], []
+        for y in range(n_y_subsets):
+            for x in range(n_x_subsets):
+                ymin, ymax = y * sub_size, (y + 1) * sub_size
+                xmin, xmax = x * sub_size, (x + 1) * sub_size
+                band_stack_subset = band_stack[:, ymin:ymax, xmin:xmax]
+                lat_copy, lon_copy = self.lat.copy(), self.lon.copy()
+                self.lat = self.lat[ymin:ymax]
+                self.lon = self.lon[xmin:xmax]
+                try:
+                    self.train(band_stack_subset, truth_path)
+                except ValueError:
+                    prediction_arr = np.zeros((len(self.lat), len(self.lon)))
+                    prediction_boxes = []
+                else:
+                    prediction_arr = self.predict()
+                    prediction_boxes = self.extract_objects(prediction_arr)
+                meta = self.meta.copy()
+                t = meta["transform"]
+                meta["transform"] = Affine(t[0], t[1], self.lon[0], t[3], t[4], self.lat[0])
+                meta["height"] = prediction_arr.shape[0]
+                meta["width"] = prediction_arr.shape[1]
+                meta["dtype"] = prediction_arr.dtype
+                meta["count"] = 1
+                tmp_file = os.path.join(tmp_dir, "subset_tmp_%s_%s.tiff" % (y, x))
+                with rio.open(tmp_file, "w", **meta) as tgt:
+                    tgt.write(prediction_arr, 1)
+                tmp_files.append(tmp_file)
+                if len(prediction_boxes) > 0:
+                    all_detections.append(prediction_boxes)
+                self.lat, self.lon = lat_copy, lon_copy
+        # merge prediction arrays
+        merged, transform = merge(tmp_files)
+        merged = merged[0]
+        if merged.shape[0] > self.meta["height"]:
+            merged = merged[0:self.meta["height"], :]
+        if merged.shape[1] > self.meta["width"]:
+            merged = merged[:, 0:self.meta["width"]]
+        rmtree(tmp_dir)
+        return merged, pd.concat(all_detections)
+
+    def train(self, band_stack, truth_path):
         variables = self._build_variables(band_stack)
         self.variables = variables
-        self._split_train_test(self._prepare_truth(truth_path))
+        truth_path_tmp = self._prepare_truth(truth_path)
+        try:
+            self._split_train_test(truth_path_tmp)
+        except ValueError as e:
+            raise e
         rf = RandomForestClassifier(n_estimators=N_ESTIMATORS,
                                     min_samples_split=MIN_SAMPLES_SPLIT,
                                     min_samples_leaf=MIN_SAMPLES_LEAF,
                                     max_features=MAX_FEATURES,
                                     max_depth=MAX_DEPTH,
-                                    bootstrap=BOOTSTRAP,
-                                    oob_score=True)
+                                    bootstrap=BOOTSTRAP)
         rf.fit(self.vars["train"], self.labels["train"])
         test_pred = rf.predict(self.vars["test"])
         accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
@@ -72,7 +132,7 @@ class RFTruckDetector:
         max_depth.append(None)
         min_samples_split = [2, 5, 10]
         min_samples_leaf = [1, 2, 4]
-        bootstrap = [True, False]  # Create the random grid
+        bootstrap = [True, False]
         hyper_hyper = {"n_estimators": n_trees,
                        "max_features": max_features,
                        "max_depth": max_depth,
@@ -137,7 +197,7 @@ class RFTruckDetector:
         t0 = datetime.now()
         preds = predictions_raster.copy()  # copy because will be modified
         blue_ys, blue_xs = np.where(preds == 2)
-        boxes, sub_size = [], 15
+        detection_boxes, directions, direction_descriptions, speeds, sub_size = [], [], [], [], 15
         for y_blue, x_blue in zip(blue_ys, blue_xs):
             if preds[y_blue, x_blue] == 0:
                 continue
@@ -192,6 +252,15 @@ class RFTruckDetector:
             too_large *= box_preds.shape[0] > 4 and box_preds.shape[1] > 4
             if too_large or not all_given or not large_enough:
                 continue
+            # calculate direction
+            blue_y, blue_x = np.where(box_preds == 2)
+            red_y, red_x = np.where(box_preds == 4)
+            # simply use first index
+            red_indices, blue_indices = np.int8([red_y[0], red_x[0]]), np.int8([blue_y[0], blue_x[0]])
+            blue_red_vector = red_indices - blue_indices
+            direction = self.calc_vector_direction_in_degree(blue_red_vector)
+            diameter = np.max(box_preds.shape) * 10 / 2  # 10 m resolution
+            speed = (diameter * (3600 / SECONDS_OFFSET_B02_B04)) * 0.001
             # set cells from cluster and all blue cells to zero value in predictions array
             preds[ymin:ymax, xmin:xmax] = np.int8(box_preds != 2)  # set blue cells in preds within box to zero
             # create output box
@@ -206,9 +275,15 @@ class RFTruckDetector:
             except IndexError:
                 lat_max = self.lat[-1] + (self.lat[-1] - self.lat[-2])
             cluster_box = Polygon(box(lon_min, lat_min, lon_max, lat_max))
-            boxes.append(cluster_box)
-        out_gpd = gpd.GeoDataFrame({"id": list(range(1, len(boxes) + 1))},
-                                   geometry=boxes,
+            detection_boxes.append(cluster_box)
+            directions.append(direction)
+            direction_descriptions.append(self.direction_degree_to_description(direction))
+            speeds.append(speed)
+        out_gpd = gpd.GeoDataFrame({"id": list(range(1, len(detection_boxes) + 1)),
+                                    "direction_degree": directions,
+                                    "direction_description": direction_descriptions,
+                                    "speed": speeds},
+                                   geometry=detection_boxes,
                                    crs=self.meta["crs"])
         self._elapsed(t0)
         return out_gpd
@@ -307,18 +382,22 @@ class RFTruckDetector:
 
     def _prepare_truth(self, truth_path):
         truth_data = pd.read_csv(truth_path, index_col=0)
-        background_indices = np.where(truth_data["label"] == "background")
-        for background_idx in background_indices:
+        background_indices = np.where(truth_data["label"] == "background")[0]
+        for background_idx in np.random.choice(background_indices, int(len(background_indices))):
             try:
                 truth_data.drop(background_idx, inplace=True)
             except KeyError:
                 continue
-        n_truth = len(truth_data)
-        truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
-                                          n_truth)
+       # n_truth = len(truth_data)
+       # truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
+        #                                  n_truth)
         truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
-        truth_data.to_csv(truth_path_tmp)
-        return truth_path_tmp
+        try:
+            truth_data.to_csv(truth_path_tmp)
+        except AttributeError:
+            return
+        else:
+            return truth_path_tmp
 
     def _split_train_test(self, truth_path_tmp):
         truth_data = pd.read_csv(truth_path_tmp, index_col=0)
@@ -355,10 +434,11 @@ class RFTruckDetector:
         size_low = int(size / 2)
         size_up = int(size / 2)
         size_up = size_up + 1 if (size_low + size_up) < size else size_up
+        ymin, ymax = int(np.clip(y - size_low, 0, pseudo_max)), int(np.clip(y + size_up, 0, pseudo_max))
+        xmin, xmax = int(np.clip(x - size_low, 0, pseudo_max)), int(np.clip(x + size_up, 0, pseudo_max))
         n = len(arr.shape)
         if n == 2:
-            subset = arr[int(np.clip(y - size_low, 0, pseudo_max)):int(np.clip(y + size_up, 0, pseudo_max)),
-                     int(np.clip(x - size_low, 0, pseudo_max)):int(np.clip(x + size_up, 0, pseudo_max))]
+            subset = arr[ymin:ymax, xmin:xmax]
         elif n == 3:
             subset = arr[:, int(np.clip(y - size_low, 0, pseudo_max)):int(np.clip(y + size_up, 0, pseudo_max)),
                      int(np.clip(x - size_low, 0, pseudo_max)):int(np.clip(x + size_up, 0, pseudo_max))]
@@ -414,10 +494,13 @@ class RFTruckDetector:
         not_nan = np.min(not_nan_reflectances, 0) * not_nan_ndvi * np.min(not_nan_ratios, 0)
         min_background, max_background = int(n_truth * 0.1), n_truth
         not_nan_y, not_nan_x = np.where(not_nan == 1)
-        n_background = int(np.clip(np.count_nonzero(not_nan == 1) * 0.01,
+        n_background = int(np.clip(np.count_nonzero(not_nan == 1) * 0.04,
                                    min_background,
                                    max_background))
-        random_indices = np.random.randint(0, len(not_nan_y), n_background)
+        try:
+            random_indices = np.random.randint(0, len(not_nan_y), n_background)
+        except ValueError:
+            return
         row_idx = len(out_pd)
         for random_idx in zip(random_indices):
             y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
@@ -436,19 +519,44 @@ class RFTruckDetector:
             row_idx += 1
         return out_pd
 
+    @staticmethod
+    def calc_vector_direction_in_degree(vector):
+        # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
+        y_offset = 90 if vector[0] > 0 else 0
+        x_offset = 90 if vector[1] < 0 else 0
+        offset = 180 if y_offset == 0 and x_offset == 90 else 0
+        if vector[0] == 0:
+            direction = 0.
+        else:
+            direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
+        direction += offset + y_offset + x_offset
+        return direction
+
+    @staticmethod
+    def direction_degree_to_description(direction_degree):
+        step = 22.5
+        bins = np.arange(0, 359, step, dtype=np.float32)
+        descriptions = np.array(["N", "NNE", "NE", "ENE",
+                                 "E", "ESE", "SE", "SEE",
+                                 "S", "SSW", "SW", "WSW",
+                                 "W", "WNW", "NW", "NNW"])
+        i, b = 0, -1
+        while b < direction_degree and i < len(bins):
+            b = bins[i]
+            i += 1
+        return descriptions[i - 1]
+
 
 if __name__ == "__main__":
     if do_tuning:
         tile_spectra = []   # training spectra of all tiles
         rf_td = RFTruckDetector()
         for tile in training_tiles:
-            print(tile)
             imgs = np.array(glob(dirs["imgs"] + os.sep + "*" + tile + "*.tif"))
             lens = np.int32([len(x) for x in imgs])
             bands = rf_td.read_bands(imgs[np.where(lens == lens.min())[0]][0])
             bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
             tile_spectra.append(rf_td.extract_background_for_tuning(truth_csv, bands_preprocessed))
-            bands_preprocessed = None
         truth_tmp_csv = os.path.join(dirs["truth"], "truth_tmp.csv")
         pd.concat(tile_spectra).to_csv(truth_tmp_csv)
         rf_td.tune(truth_tmp_csv, os.path.join(dirs["truth"], "tuning.csv"))
@@ -456,9 +564,10 @@ if __name__ == "__main__":
         rf_td = RFTruckDetector()
         bands = rf_td.read_bands(s2_file)
         bands_preprocessed = rf_td.preprocess_bands(bands, dirs["osm"])
-        rf_td.train(number_trees, truth_csv, bands_preprocessed)
+        rf_td.train(bands_preprocessed, truth_csv)
         predictions = rf_td.predict()
         boxes = rf_td.extract_objects(predictions)
+    #    predictions, boxes = rf_td.run(bands_preprocessed, truth_csv)
         try:
             name = os.path.basename(s2_file).split("bands_")[1].split("_merged")[0]
         except IndexError:
