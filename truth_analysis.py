@@ -20,7 +20,7 @@ dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY")
 
-tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T36NYF", "T37MCT", "T36RUU", "T35JPM"]
+tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T37MCT", "T36RUU", "T35JPM"]
 n_clusters = 50  # number of RGB vector clusters
 
 overwrite_truth_csv = True
@@ -70,11 +70,10 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
-        sub_ratio_diffs = ratios_diffs[:, y0:y1 + 1, x0:x1 + 1].copy()
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1 + 1, x0:x1 + 1])
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-   # spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 4)
+    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 10)
     #print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
