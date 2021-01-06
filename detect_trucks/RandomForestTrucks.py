@@ -24,7 +24,7 @@ dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archiv
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 
 s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
@@ -383,14 +383,10 @@ class RFTruckDetector:
     def _prepare_truth(self, truth_path):
         truth_data = pd.read_csv(truth_path, index_col=0)
         background_indices = np.where(truth_data["label"] == "background")[0]
-        for background_idx in np.random.choice(background_indices, int(len(background_indices))):
-            try:
-                truth_data.drop(background_idx, inplace=True)
-            except KeyError:
-                continue
-       # n_truth = len(truth_data)
-       # truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
-        #                                  n_truth)
+        for idx in np.random.choice(background_indices, int(len(background_indices)), replace=False):
+            truth_data.drop(idx, inplace=True)
+        truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
+                                          len(truth_data) * 8)
         truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(truth_path_tmp)
