@@ -51,11 +51,12 @@ stations = {"Theeßen (3810)": ["2018-11-28", "2018-11-28"],
             "Crailsheim-Süd (8827)": ["2018-04-27", "2018-04-27"]}  # Bundesstraße
 
 
-#stations = {list(stations.keys())[0]: list(stations.values())[0],
- #           list(stations.keys())[1]: list(stations.values())[1],
-  #          list(stations.keys())[2]: list(stations.values())[2]}
-
-stations = {list(stations.keys())[3]: list(stations.values())[3]}
+stations = {list(stations.keys())[0]: list(stations.values())[0],
+            list(stations.keys())[1]: list(stations.values())[1],
+            list(stations.keys())[2]: list(stations.values())[2],
+            list(stations.keys())[3]: list(stations.values())[3],
+            list(stations.keys())[4]: list(stations.values())[4],
+            list(stations.keys())[5]: list(stations.values())[5]}
 
 
 class Validator:
@@ -221,8 +222,8 @@ class Validator:
             direction_range = np.sort([direction_bins[lowest_diff_idx - 4], direction_bins[int(up)]])
             # check if vehicle is traveling from station (count) or to station (drop)
             direction_matching = direction_range[0] < detection["direction_degree"] < direction_range[1]
-            if direction_matching:
-                detections_in_reach.append(detection)
+            #if direction_matching:
+            detections_in_reach.append(detection)
         # compare number of detections in reach to the one of count station
         date_station_format = self.date[2:].replace("-", "")  # e.g. "2018-12-31" -> "181231"
         time_match = (station_counts["Datum"] == int(date_station_format)) * (station_counts["Stunde"] == hour)
@@ -230,7 +231,7 @@ class Validator:
         idx = len(validation_pd)
         for key, value in {"station_file": station_file, "s2_counts_file": self.s2_data_file,
                            "detections_file": self.detections_file,
-                           "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach)}.items():
+                           "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach) / 2}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
             # add counts proportional to number of minutes
@@ -345,9 +346,13 @@ class Validator:
 
 
 if __name__ == "__main__":
-    os.remove(os.path.join(dir_validation, "validation_run.csv"))
+    try:
+        os.remove(os.path.join(dir_validation, "validation_run.csv"))
+    except FileNotFoundError:
+        pass
     for station, acquisition_period in stations.items():
         print("Station: %s" % station)
         validator = Validator(station, aois_file, dir_validation, dir_osm)
         validator.detect(acquisition_period)
         validator.validate()
+    validation = pd.read_csv(os.path.join(dir_validation, "validation_run.csv"))
