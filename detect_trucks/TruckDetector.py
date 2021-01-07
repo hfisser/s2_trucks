@@ -51,7 +51,7 @@ MAX_MAX_DIST_RED = THRESHOLDS["max_max_dist_red"][0]
 MAX_ANGLE_BR_BG = THRESHOLDS["mean_red_green_spatial_angle"][0] + THRESHOLDS["std_red_green_spatial_angle"][0] * 3
 # SPECTRAL ANGLE
 #MIN_R_SQUARED = THRESHOLDS["mean_rgb_rsquared"][0] - THRESHOLDS["std_rgb_rsquared"][0] * 3
-DEFAULT_MIN_CORRELATION = 0.1
+DEFAULT_MIN_CORRELATION = 0.5
 MAX_SLOPE = 10
 MIN_SLOPE = 0.05
 
@@ -118,7 +118,7 @@ class Detector:
         band_stack_np = np.array([band_dict["B04"], band_dict["B03"], band_dict["B02"], band_dict["B08"]])
         low_rgb_mask = self.calc_low_quantile_mask(band_stack_np[0:3], [0.2])  # mask out lowest 20 % reflectances
         #high_rgb_mask = self.calc_high_quantile_mask(band_stack_np[0:3], [0.98])  # mask out highest 1 % reflectances
-#        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
+        band_stack_np[:, np.isnan(low_rgb_mask)] = np.nan
         #band_stack_np[:, np.isnan(high_rgb_mask)] = np.nan
         band_stack_np *= osm_mask
         try:
@@ -157,7 +157,7 @@ class Detector:
         Detect pixels of superior blue reflectance based on band ratios
         """
         b02, b03, b04 = self.band_stack_np[2], self.band_stack_np[1], self.band_stack_np[0]
-        min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.4]), np.nanquantile(b02, [0.999])
+        min_quantile_blue, max_quantile_blue = np.nanquantile(b02, [0.5]), np.nanquantile(b02, [0.999])
         max_quantile_green, max_quantile_red = np.nanquantile(b03, [0.9]), np.nanquantile(b04, [0.9])
         bg_ratio, br_ratio = normalized_ratio(b02, b03), normalized_ratio(b02, b04)
         bg = np.int8(bg_ratio > np.nanmean(b02) - np.nanmean(b03))
@@ -172,7 +172,7 @@ class Detector:
         # ratios B02-B03 (blue-green) and B02-B04 (blue-red)
         std_min = np.int8(np.nanstd(self.band_stack_np[0:3], 0) * 10 >= THRESHOLDS["q1_std_at_max_blue"][0])
       #  self.trucks_np = np.int8(bg * br * blue_min * blue_max * std_min * green_max * red_max)
-        self.trucks_np = np.int8(bg * br * blue_min * std_min)
+        self.trucks_np = np.int8(bg * br * blue_min * green_max * red_max * std_min)
         bg_ratio, br_ratio, blue_min, blue_max, green_max, red_max, std_min = None, None, None, None, None, None, None
 
     def _context_zoom(self):
@@ -411,21 +411,6 @@ class Detector:
                 red_y, red_x = self.crop_2d_indices(np.where(red_ratios == np.nanmax(red_ratios)))
         except IndexError:
             return return_dict
-        # calculate spatial distances from blue and eliminate blue if not fitting, try again
-#        green_length, red_length = 1, 0
- #       for y, x in zip([red_y, green_y], [red_x, green_x]):
-  #          blue_ratios[y, x] = np.nan
-        # if index of max green ratios is further away from blue than red try to find a better suitable combination
-     #   while green_further_away and np.count_nonzero(~np.isnan(blue_ratios)) > 0:
-      #      red_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [red_y, red_x]))
-       #     green_length = self.calc_vector_length(self.calc_vector([blue_y, blue_x], [green_y, green_x]))
-        #    green_further_away = green_length > red_length
-         #   if green_further_away:
-          #      blue_ratios[blue_y, blue_x] = np.nan
-           #     try:
-            #        blue_y, blue_x = self.crop_2d_indices(np.where(blue_ratios == np.nanmax(blue_ratios)))
-             #   except IndexError:
-               #     return return_dict
         blue_indices = [blue_y, blue_x]
         blue_red_spatial_vector = self.calc_vector([red_y, red_x], blue_indices)  # spatial vector blue to red
         blue_green_spatial_vector = self.calc_vector([green_y, green_x], blue_indices)  # spatial vector blue to green
@@ -892,28 +877,9 @@ class Detector:
         diff_stack = np.array([diff_red, diff_green, diff_blue])
         mask = np.zeros_like(diff_stack[0])
         for i in range(diff_stack.shape[0]):
-            mask += np.int8(diff_stack[i] > np.nanquantile(diff_stack[i], [0.5]))
-        #mask[mask != 0] = 1
-
-        mask = np.int8(diff_stack)
- #       import rasterio as rio
-#
-  #      with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\test.tiff", "r") as src:
- #           meta = src.meta
-#
-     #   meta["count"] = 3
-    #    with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\mask14.tiff", "w",
-   #                   **meta) as src:
-  #          for i in range(diff_stack.shape[0]):
- #               src.write((diff_stack[i]**4).astype(np.float64), i+1)
-#
-    #    mask[mask == 3] = 0
-   #     meta["count"] = 1
-  #      with rio.open("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\mask4.tiff", "w",
- #                     **meta) as src:
-#            src.write(mask.astype(np.float64), 1)
-
-
+            mask += np.int8(diff_stack[i] > np.nanquantile(diff_stack[i], [0.6]))
+        mask[mask != 0] = 1
+        mask = np.int8(mask)
         return mask
 
     @staticmethod
@@ -938,10 +904,7 @@ class Detector:
 
     @staticmethod
     def calc_vector_direction_in_degree(vector):
-        # [1,1] -> 45°
-        # [-1,1] -> 135°
-        # [-1,-1] -> 225°
-        # [1,-1] -> 315°
+        # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
         y_offset = 90 if vector[0] > 0 else 0
         x_offset = 90 if vector[1] < 0 else 0
         offset = 180 if y_offset == 0 and x_offset == 90 else 0
@@ -1012,13 +975,3 @@ class Detector:
         arr[y0:y1, x0:x1] = np.zeros((y1 - y0, x1 - x0))
         arr[y, x] = 1  # detection of interest remains
         return arr
-
-    @staticmethod
-    def calc_context():
-        resolution = 10  # meters
-        speed = 85 * 1000  # meters per hour
-        offset_green = 0.5  # from parallax angle
-        offset_red = 1.  # from parallax angle
-        dist_red = (speed / (3600 * (1 / offset_red))) / resolution  # m
-        dist_green = (speed / (3600 * (1 / offset_green))) / resolution  # m
-        return {"pixels_green": dist_green, "pixels_red": dist_red}
