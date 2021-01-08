@@ -20,7 +20,10 @@ dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY")
 
-tiles = ["T32UNA", "T32TPS", "T18TWK", "T31UEQ", "T35JPM"]
+tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"))
+training_tiles = list(tiles_pd["training_tiles"])  # Germany, Italy, USA, France, Russia, South Africa, India
+calibration_tiles = list(tiles_pd["calibration_tiles"])  # Netherlands, Alps, USA, Spain, Ukraine, Kenya, China
+tiles = training_tiles + calibration_tiles
 n_clusters = 50  # number of RGB vector clusters
 
 overwrite_truth_csv = True
