@@ -18,10 +18,9 @@ dir_write = os.path.join(os.path.dirname(dir_s2), "subsets")
 number_subsets = 1
 roads_buffer = 40
 tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"), sep=";")
-training_tiles = list(tiles_pd["training_tiles"])  # Germany, Italy, USA, France, Russia, South Africa, India
-calibration_tiles = list(tiles_pd["calibration_tiles"])  # Netherlands, Alps, USA, Spain, Ukraine, Kenya, China
-tiles = training_tiles + calibration_tiles
-tiles = ["T10SGF"]
+training_tiles = list(tiles_pd["training_tiles"])
+tiles = training_tiles
+
 
 def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
     tgt_crs = "EPSG:4326"
