@@ -20,10 +20,8 @@ dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY")
 
-tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"))
-training_tiles = list(tiles_pd["training_tiles"])  # Germany, Italy, USA, France, Russia, South Africa, India
-calibration_tiles = list(tiles_pd["calibration_tiles"])  # Netherlands, Alps, USA, Spain, Ukraine, Kenya, China
-tiles = training_tiles + calibration_tiles
+tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
+tiles = list(tiles_pd["training_tiles"])
 n_clusters = 50  # number of RGB vector clusters
 
 overwrite_truth_csv = True
@@ -32,7 +30,7 @@ training_percentage = 80
 OSM_BUFFER = 40
 
 
-def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_csv):
+def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, spectra_ml_csv):
     truth = pd.read_csv(truth_csv, index_col=0)
     spectra = pd.read_csv(spectra_csv, index_col=0)
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
@@ -65,8 +63,11 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
+    for row_idx in np.random.choice(boxes_gpd.index, int(np.clip(len(boxes_gpd) - n_retain, 0, 1e+10)), replace=False):
+        boxes_gpd.drop(row_idx, inplace=True)
+    boxes_gpd.index = range(len(boxes_gpd))
     print(len(boxes_gpd))
-    n = len(boxes_gpd)  # np.clip(len(boxes_gpd), 0, 50)
+    n = len(boxes_gpd)
     for i in range(n):
         box = boxes_gpd.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
@@ -76,7 +77,7 @@ def extract_statistics(img_file, boxes_gpd, truth_csv, spectra_csv, spectra_ml_c
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1 + 1, x0:x1 + 1])
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 0.5)
+    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd))
     #print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
@@ -499,25 +500,26 @@ if __name__ == "__main__":
         imgs = np.array(glob.glob(dir_imgs + os.sep + "*" + tile + "*.tif"))
         lens = np.int32([len(x) for x in imgs])
         img_file = imgs[np.where(lens == lens.min())[0]][0]
-        boxes = gpd.read_file(glob.glob(dir_truth_labels + os.sep + "*" + tile + "*.gpkg")[0])
-        n_boxes = len(boxes)
-        n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
-        n_validation = np.int32(np.round(n_boxes * (1 - (training_percentage / 100))))
-        boxes_range = list(range(n_boxes))
-        indices_training = random.sample(range(n_boxes), k=n_training)
-        for idx in indices_training:
-            del boxes_range[boxes_range.index(idx)]
-        indices_validation = boxes_range
-        boxes_training = boxes.iloc[indices_training]
-        boxes_validation = boxes.iloc[indices_validation]
+        boxes_truth = gpd.read_file(glob.glob(dir_truth_labels + os.sep + "*" + tile + "*.gpkg")[0])
+  #      n_boxes = len(boxes)
+   #     n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
+    #    n_validation = np.int32(np.round(n_boxes * (1 - (training_percentage / 100))))
+     #   boxes_range = list(range(n_boxes))
+      #  indices_training = random.sample(range(n_boxes), k=n_training)
+   #     for idx in indices_training:
+    #        del boxes_range[boxes_range.index(idx)]
+     #   indices_validation = boxes_range
+      #  boxes_training = boxes.iloc[indices_training]
+       # boxes_validation = boxes.iloc[indices_validation]
         # save validation boxes
-        boxes_validation.index = range(len(boxes_validation))
-        boxes_validation.to_file(os.path.join(dir_truth_labels,
-                                              os.path.basename(img_file).split(".tif")[0] + "_validation.gpkg"),
-                                 driver="GPKG")
+       # boxes_validation.index = range(len(boxes_validation))
+        #boxes_validation.to_file(os.path.join(dir_truth_labels,
+         #                                     os.path.basename(img_file).split(".tif")[0] + "_validation.gpkg"),
+             #                    driver="GPKG")
         # extract stats from training boxes
-        boxes_training.index = range(len(boxes_training))
-        extract_statistics(img_file, boxes_training, file_path_truth, file_path_spectra, file_path_spectra_ml)
+       # boxes_training.index = range(len(boxes_training))
+        extract_statistics(img_file, boxes_truth, int(tiles_pd[tiles_pd["training_tiles"] == tile]["n_retain"]),
+                           file_path_truth, file_path_spectra, file_path_spectra_ml)
   #  analyze_statistics(file_path_truth, file_path_spectra)
   #  cluster_rgb_vectors(file_path_truth, os.path.join(dir_truth, "thresholds.csv"),
    #                     os.path.join(dir_truth, "rgb_vector_clusters.csv"), n_clusters)
