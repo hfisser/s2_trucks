@@ -25,7 +25,8 @@ dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
 
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
@@ -107,7 +108,6 @@ class RFTruckDetector:
     def train(self, band_stack, truth_path, coeff):
         variables = self._build_variables(band_stack)
         self.variables = variables
-        #n = np.count_nonzero(~np.isnan(band_stack)) / 25
         self._prepare_truth(truth_path, coeff)
         try:
             self._split_train_test()
@@ -394,18 +394,7 @@ class RFTruckDetector:
         for idx in np.random.choice(background_indices, n, replace=False):
             truth_data.drop(idx, inplace=True)
         truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-4:], self.variables[-5],
-                                          len(truth_data[truth_data["label"] != "background"]))
-   #     background = truth_data[truth_data["label"] == "background"]
-    #    from sklearn.cluster import KMeans
-     #   columns = background.columns
-      #  value_idx = np.where(columns == "red")[0][0]
-       # vectors = np.vstack([background[col] for col in columns[value_idx:]]).swapaxes(0, 1)
-      #  k_means = KMeans(n_clusters=2).fit(vectors)
-      #  labels = np.int8(k_means.labels_)
-      #  labels += 1
-      #  labels *= -1  # background classes have negative index
-      #  for i, idx in enumerate(truth_data.index[np.where(truth_data["label"] == "background")[0]]):
-      #      truth_data.loc[idx, "label_int"] = labels[i]
+                                          len(truth_data[truth_data["label"] != "background"]) * 0.75)
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
