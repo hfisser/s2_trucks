@@ -77,7 +77,7 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1 + 1, x0:x1 + 1])
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd))
+    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 3)
     #print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
