@@ -11,6 +11,7 @@ from glob import glob
 from shutil import copyfile
 from shapely.geometry import Point
 from shapely.geometry.linestring import LineString
+from fiona.errors import DriverError
 from rasterio.merge import merge
 
 from osm_utils.utils import get_roads, rasterize_osm
@@ -35,19 +36,18 @@ NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
 OSM_BUFFER = 25
-hour, minutes, year = 11, 10, 2018
+hour, minutes, year = 11, 20, 2018
 
 stations = dict()
 stations_pd = pd.read_csv(os.path.join(os.path.dirname(aois_file), "validation_stations.csv"), sep=";")
 for station_name, start in zip(stations_pd["Name"], stations_pd["S2_date_start"]):
-    if "AS Dierdorf" in station_name:
-        split = start.split(".")
-        date = "-".join([split[2], split[1], split[0]])
-        stations[station_name] = [date, date]
+    split = start.split(".")
+    date = "-".join([split[2], split[1], split[0]])
+    stations[station_name] = [date, date]
 
 
 class Validator:
-    def __init__(self, station_name, station_aois_file, dir_validation_home, dir_osm_data):
+    def __init__(self, station_denotation, station_aois_file, dir_validation_home, dir_osm_data):
         aois = gpd.read_file(station_aois_file)
         self.dirs = {"validation": dir_validation_home, "osm": dir_osm_data,
                      "station_counts": os.path.join(dir_validation_home, "data", "BAST", "station_counts"),
@@ -57,14 +57,15 @@ class Validator:
             if not os.path.exists(directory):
                 os.mkdir(directory)
         self.validation_file = os.path.join(self.dirs["validation"], "validation_run.csv")
-        self.station_name = station_name
+        self.station_name = station_denotation
         attribute_given = any(["(" + s + ")" in self.station_name for s in ["N", "E", "S", "W"]])
         self.station_name_clear = self.station_name.split(" (")[0]
         alternative_split = self.station_name.split(") (")[0].split(" (")[0]
         self.station_name_clear = alternative_split if attribute_given else self.station_name_clear
         self.station_name_clear = self.station_name_clear.replace(" ", "_")
-        self.station_meta = self.get_station_meta(station_name)
-        bbox = aois[aois["Name"] == station_name].geometry.bounds
+        self.station_name = self.station_name.split("(1)")[0] if self.station_name.endswith("(1)") else self.station_name
+        self.station_meta = self.get_station_meta(self.station_name)
+        bbox = aois[aois["Name"] == self.station_name].geometry.bounds
         self.bbox_epsg4326 = (float(bbox.miny), float(bbox.minx), float(bbox.maxy), float(bbox.maxx))  # min lat, min lon, max lat, max lon
         self.crs = aois.crs
         self.lat, self.lon = None, None
@@ -140,7 +141,10 @@ class Validator:
         detector.train(bands_preprocessed, truth_csv, 10)
         prediction = detector.predict()
         prediction_boxes = detector.extract_objects(prediction)
-        detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+        try:
+            detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+        except ValueError:
+            pass
         station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
         wrong = len(station_folder) == 4
         station_folder = "zst" + self.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
@@ -159,53 +163,22 @@ class Validator:
         except FileNotFoundError:
             validation_pd = pd.DataFrame()
         speed = 90
-        self.detections = gpd.read_file(self.detections_file)
-        self.prepare_s2_counts()
+        try:
+            self.detections = gpd.read_file(self.detections_file)
+        except DriverError:
+            self.detections = gpd.GeoDataFrame()
+        else:
+            self.prepare_s2_counts()
         hour_proportion = (minutes / 60)
         distance_traveled = hour_proportion * speed
         station_counts = pd.read_csv(self.station_file, sep=";")
         station_point = Point([self.station_meta["x"], self.station_meta["y"]])
         station_buffer = station_point.buffer(distance_traveled * 1000)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer], crs=self.detections.crs)
-        detections_in_reach = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
-    #    ref = xr.DataArray(np.zeros((len(self.lat), len(self.lon))),  coords={"lat": self.lat, "lon": self.lon},
-     #                      dims=("lat", "lon"))
-      #  osm_raster_aggregated = self.max_aggregate(rasterize_osm(self.osm_roads, ref), 200)
-       # osm_raster_aggregated[~np.isnan(osm_raster_aggregated) * osm_raster_aggregated != 0] = 1
-        # downsample lat lon to aggregated osm roads
-   #     shape_new = osm_raster_aggregated.shape
-     #   lat_aggregated = np.flip(np.arange(self.lat[-1], self.lat[0], (self.lat[0] - self.lat[-1]) / shape_new[0]))
-      #  lon_aggregated = np.arange(self.lon[0], self.lon[-1], (self.lon[-1] - self.lon[0]) / shape_new[1])
-        # create point grid in aoi
-     #   road_points = raster_to_points(osm_raster_aggregated, {"lat": lat_aggregated, "lon": lon_aggregated},
-      #                                 "id", "EPSG:" + str(self.detections.crs.to_epsg()))
-  #      detections_in_reach = []
-   #     for detection in self.detections.iterrows():
-    #        detection = detection[1]
-     ##       detection_point = detection.geometry.centroid
-       #     detection_y, detection_x = detection_point.y, detection_point.x
-        #    station_y, station_x = station_point.y, station_point.x
-         #   traveled_distance = speed * hour_proportion
-          #  line_to_detection = LineString([detection_point, station_point])
-           # # passed by the station in number of minutes
-   #         distance_matching = traveled_distance >= line_to_detection.length / 1000
-    #        if not distance_matching:
-     #           continue
-      #      # check direct line to detection and compare with vehicle heading (only include if heading away)
-       #     direct_vector_to_detection = self.calc_vector([station_y, station_x], [detection_y, detection_x])
-        #    # calculate in which direction the station is
-         #   direction_bins = np.arange(0, 359, 22.5, dtype=np.float32)
-          #  station_direction = self.calc_vector_direction_in_degree(direct_vector_to_detection)
-           # diffs = np.abs(direction_bins - station_direction)
-            #lowest_diff_idx = np.where(diffs == diffs.min())[0][0]
-            # get range of directions (180°)
-  #          up = lowest_diff_idx + 4
-   #         up = up - len(direction_bins) if up >= len(direction_bins) else up
-    #        direction_range = np.sort([direction_bins[lowest_diff_idx - 4], direction_bins[int(up)]])
-     #       # check if vehicle is traveling from station (count) or to station (drop)
-      #      direction_matching = direction_range[0] < detection["direction_degree"] < direction_range[1]
-       #     #if direction_matching:
-        #    detections_in_reach.append(detection)
+        try:
+            detections_in_reach = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
+        except AttributeError:  # no detections in reach
+            detections_in_reach = gpd.GeoDataFrame()
         # compare number of detections in reach to the one of count station
         date_station_format = self.date[2:].replace("-", "")  # e.g. "2018-12-31" -> "181231"
         time_match = (station_counts["Datum"] == int(date_station_format)) * (station_counts["Stunde"] == hour)
@@ -233,6 +206,7 @@ class Validator:
         station_road_type = [self.station_meta["road_type"]]
         if station_road_type[0] == "primary":
             station_road_type.append("trunk")
+        station_road_type.append(station_road_type[0] + "_link")
         osm_subset = []
         for road_type in np.unique(station_road_type):
             subset = osm_roads[osm_roads["osm_value"] == road_type]
@@ -249,10 +223,10 @@ class Validator:
         self.detections = gpd.GeoDataFrame(detections_within, crs=self.detections.crs)
 
     @staticmethod
-    def get_station_meta(station_name):
+    def get_station_meta(bast_station_name):
         """
         gets UTM coordinates of BAST traffic count station from BAST webpage
-        :param station_name: str in the format "Theeßen (3810)"
+        :param bast_station_name: str in the format "Theeßen (3810)"
         :return: dict x and y UTM coordinate
         """
         response = requests.get(BAST_URL)
@@ -264,13 +238,14 @@ class Validator:
                 name = station_row.split(": ")[1].split(",")[0]
             except IndexError:
                 continue
-            if name == station_name:
+            if name == bast_station_name:
+                print(name)
                 # get color as road type marker
-                try:
-                    color = station_row.split(",red,")
-                    road_type = "motorway"
-                except IndexError:
+                color = station_row.split(",red,")
+                if len(color) == 1:
                     road_type = "primary"
+                else:
+                    road_type = "motorway"
                 try:
                     # get coordinates
                     coordinates = station_row.split("results, ")[1].split(",")
