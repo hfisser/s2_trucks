@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import xarray as xr
-import random
 import rasterio as rio
 from sklearn.cluster import KMeans
 from scipy.stats import linregress
@@ -18,7 +17,7 @@ dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_imgs = os.path.join(dir_main, "data", "s2", "subsets")
 dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
-dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY")
+dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
 tiles = list(tiles_pd["training_tiles"])
@@ -59,7 +58,7 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
     for band_idx in range(n_bands):
         ratios[band_idx] = normalized_ratio(arr[band_idx], arr[ratio_counterparts[band_idx]])
     ratios[3] = normalized_ratio(arr[1], arr[2])  # add green vs. blue
-    ratios_diffs = expose_anomalous_pixels(ratios[0:3])
+  #  ratios_diffs = expose_anomalous_pixels(ratios[0:3])
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
@@ -77,7 +76,7 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, ndvi[y0:y1 + 1, x0:x1 + 1])
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 3)
+    spectra_ml = add_background(spectra_ml, arr, ratios, ndvi, len(boxes_gpd) * 9)
     #print("Number of truth features in csv: %s" % (str(len(truth))))
    # truth.to_csv(truth_csv)
    # spectra.to_csv(spectra_csv)
