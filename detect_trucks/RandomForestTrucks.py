@@ -24,10 +24,10 @@ dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archiv
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Lichtenau-Blankenrode_2018-11-16_2018-11-16_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
@@ -107,9 +107,8 @@ class RFTruckDetector:
         return merged, pd.concat(all_detections)
 
     def train(self, band_stack, truth_path, coeff):
-        variables = self._build_variables(band_stack)
-        self.variables = variables
-        self._prepare_truth(truth_path, False)
+        self.variables = self._build_variables(band_stack)
+        self._prepare_truth(truth_path, None, True)
         try:
             self._split_train_test()
         except ValueError as e:
@@ -121,21 +120,20 @@ class RFTruckDetector:
                                     max_depth=MAX_DEPTH,
                                     bootstrap=BOOTSTRAP)
         rf.fit(self.vars["train"], self.labels["train"])
-        self.rf_model = rf
-        prediction_initial = self.predict()
-        band_stack_copy = band_stack.copy()
-        band_stack_copy[:, prediction_initial != 1] = np.nan
-        self.variables = self._build_variables(band_stack_copy)
-        self._prepare_truth(truth_path, True)
-        try:
-            self._split_train_test()
-        except ValueError as e:
-            raise e
-        rf.fit(self.vars["train"], self.labels["train"])
-    #    test_pred = rf.predict(self.vars["test"])
+#        self.rf_model = rf
+#        prediction_initial = self.predict()
+ #       band_stack_copy = band_stack.copy()
+  #      band_stack_copy[:, prediction_initial != 1] = np.nan  # only variables where background has been classified
+   #     self._prepare_truth(truth_path, self._build_variables(band_stack_copy), True)
+    #    try:
+     #       self._split_train_test()
+      #  except ValueError as e:
+       #     raise e
+       # rf.fit(self.vars["train"], self.labels["train"])
+     #   test_pred = rf.predict(self.vars["test"])
      #   accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
-        self.variables = self._build_variables(band_stack)
-      #  print("RF accuracy: %s" % accuracy)
+       # print("RF accuracy: %s" % accuracy)
+    #    self.variables = self._build_variables(band_stack)
         try:
             os.remove(self.truth_path_tmp)
         except FileNotFoundError:
@@ -241,12 +239,13 @@ class RFTruckDetector:
                     subset_15[this_y, this_x] = 0
             if not all([value in subset_15 for value in [2, 3, 4]]):
                 continue
-            cluster, yet_seen_indices, yet_seen_values = self._cluster_array(arr=subset_15,
-                                                                             point=[half_idx_y, half_idx_x],
-                                                                             new_value=new_value,
-                                                                             current_value=current_value,
-                                                                             yet_seen_indices=[],
-                                                                             yet_seen_values=[])
+            cluster, yet_seen_indices, yet_seen_values, joker_played = self._cluster_array(arr=subset_15,
+                                                                                           point=[half_idx_y, half_idx_x],
+                                                                                           new_value=new_value,
+                                                                                           current_value=current_value,
+                                                                                           yet_seen_indices=[],
+                                                                                           yet_seen_values=[],
+                                                                                           joker_played=False)
             if np.count_nonzero(cluster == new_value) < 3:
                 continue
             # add neighboring blue in 3x3 window around blue
@@ -269,14 +268,15 @@ class RFTruckDetector:
             all_given = all([value in box_preds for value in [2, 3, 4]])
             large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
             too_large = box_preds.shape[0] > 5 or box_preds.shape[1] > 5
-            too_large *= box_preds.shape[0] > 4 and box_preds.shape[1] > 4
-            if too_large or not all_given or not large_enough:
+            too_large += box_preds.shape[0] > 4 and box_preds.shape[1] > 4
+            if too_large > 0 or not all_given or not large_enough:
                 continue
             # calculate direction
             blue_y, blue_x = np.where(box_preds == 2)
             red_y, red_x = np.where(box_preds == 4)
             # simply use first index
-            red_indices, blue_indices = np.int8([red_y[0], red_x[0]]), np.int8([blue_y[0], blue_x[0]])
+            blue_indices = np.int8([blue_y[0], blue_x[0]])
+            red_indices = np.int8([red_y[0], red_x[0]])
             blue_red_vector = red_indices - blue_indices
             direction = self.calc_vector_direction_in_degree(blue_red_vector)
             diameter = np.max(box_preds.shape) * 10 / 2  # 10 m resolution
@@ -308,7 +308,7 @@ class RFTruckDetector:
         self._elapsed(t0)
         return out_gpd
 
-    def _cluster_array(self, arr, point, new_value, current_value, yet_seen_indices, yet_seen_values):
+    def _cluster_array(self, arr, point, new_value, current_value, yet_seen_indices, yet_seen_values, joker_played):
         """
         looks for non zeros in 3x3 window around point in array and assigns a new value to these non-zeros
         :param arr: np array
@@ -325,11 +325,13 @@ class RFTruckDetector:
         arr_modified = arr.copy()
         arr_modified[point[0], point[1]] = 0
         window_3x3 = self._get_arr_subset(arr_modified.copy(), point[0], point[1], 3)
+        window_4x4 = self._get_arr_subset(arr_modified.copy(), point[0], point[1], 4)
         # first look for values on horizontal and vertical, if none given try corners
         window_3x3_without_corners = self._eliminate_array_corners(window_3x3.copy(), 1)
         # try matches in 3x3 window, if none given in 3x3 without corner
         ys, xs, window_idx = [], [], 0
-        windows = [window_3x3_without_corners, window_3x3]
+        windows = [window_3x3_without_corners, window_3x3, window_4x4]
+        windows = windows[0:2] if current_value == 4 or joker_played else windows
         offset_y, offset_x = 0, 0
         while len(ys) == 0 and window_idx < len(windows):
             window = windows[window_idx]
@@ -343,7 +345,10 @@ class RFTruckDetector:
         for y_local, x_local in zip(ys, xs):
             y, x = ymin + y_local, xmin + x_local
             if [y, x] not in yet_seen_indices or len(yet_seen_indices) == 0:
-                current_value = arr[y, x]
+                try:
+                    current_value = arr[y, x]
+                except IndexError:
+                    continue
                 if 4 in yet_seen_values and current_value <= 3:  # red yet seen but this is green or blue
                     continue
                 arr_modified[y, x] = new_value
@@ -354,14 +359,15 @@ class RFTruckDetector:
                 if n_picks[2] > n_picks[0] and n_picks[2] > n_picks[1]:
                     break  # finish clustering in order to avoid picking many reds at the edge of object
                 if any([n > 4 for n in n_picks]):
-                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values
-                arr_modified, yet_seen_indices, yet_seen_values = self._cluster_array(arr_modified, [y, x],
+                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values, joker_played
+                arr_modified, yet_seen_indices, yet_seen_values, joker_played = self._cluster_array(arr_modified, [y, x],
                                                                                       new_value,
                                                                                       current_value,
                                                                                       yet_seen_indices,
-                                                                                      yet_seen_values)
+                                                                                      yet_seen_values,
+                                                                                                    joker_played)
         arr_modified[point[0], point[1]] = new_value
-        return arr_modified, yet_seen_indices, yet_seen_values
+        return arr_modified, yet_seen_indices, yet_seen_values, joker_played
 
     def read_bands(self, file_path):
         try:
@@ -400,19 +406,38 @@ class RFTruckDetector:
     def prediction_boxes_to_geojson(self, prediction_boxes, file_path):
         self._write_boxes(file_path, prediction_boxes, ".geojson")
 
-    def _prepare_truth(self, truth_path, add_background):
+    def _prepare_truth(self, truth_path, vars_background, add_background):
         truth_data = pd.read_csv(truth_path, index_col=0)
-        truth_data.drop("ndvi", 1, inplace=True)
         truth_data.drop("blue_red_ratio", 1, inplace=True)
         truth_data.drop("green_red_ratio", 1, inplace=True)
+        truth_data.drop("reflectance_var", 1, inplace=True)
         background_indices = np.where(truth_data["label"] == "background")[0]
         n = int(len(background_indices))
-        n = n if add_background else int(n * 0.5)
+        n = n if add_background else int(n * 0.00001)
         for idx in np.random.choice(background_indices, n, replace=False):
             truth_data.drop(idx, inplace=True)
         if add_background:
-            truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-2:], self.variables[-5],
-                                              len(truth_data[truth_data["label"] != "background"]) * 4)
+            truth_data.drop(truth_data[truth_data["label"] == "background"].index, inplace=True)
+            truth_data.index = range(len(truth_data))
+            n_labels = len(truth_data[truth_data["label"] != "background"])
+            red_blue_quantile = np.nanquantile(self.variables[-2], [0.9])
+            green_blue_quantile = np.nanquantile(self.variables[-1], [0.9])
+            blue_superior_red = np.count_nonzero(self.variables[2] > self.variables[0])
+            blue_superior_green = np.count_nonzero(self.variables[2] > self.variables[1])
+            print(blue_superior_red)
+            print(blue_superior_green)
+            n_pixels = np.count_nonzero(~np.isnan(self.variables[0]))
+            n_pixels_share = n_pixels * 0.01
+            n_superior_blues = [blue_superior_red, blue_superior_green]
+            diff = np.max(n_superior_blues) - np.min(n_superior_blues)
+            n_superior_blue = np.mean(n_superior_blues) if diff < n_pixels_share else np.nanquantile(n_superior_blues, [0.25])
+            n_blue = n_superior_blue / n_pixels
+            print(n_blue)
+            n = np.clip((-((n_blue * 100)**2) + 4.5), 0.75, 3)**2
+            print(n)
+     #       truth_data = self._add_background(truth_data, vars_background[0:4], vars_background[-2:], n_labels * 20)
+            truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-2:],
+                                              int(n_labels * n))
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
@@ -425,8 +450,6 @@ class RFTruckDetector:
         variables = [truth_data["red"], truth_data["green"], truth_data["blue"], truth_data["nir"],
                      truth_data["reflectance_std"],
                      truth_data["red_blue_ratio"],
-                  #   truth_data["green_red_ratio"],
-                   #  truth_data["blue_red_ratio"],
                      truth_data["green_blue_ratio"]]
         variables = np.float32(variables).swapaxes(0, 1)
         vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.2)
@@ -441,9 +464,12 @@ class RFTruckDetector:
             variables[band_idx] = band_stack[band_idx]
         variables[-3] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
         variables[-2] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
-  #      variables[-3] = normalized_ratio(band_stack[1], band_stack[0]).astype(np.float16)  # green/red
-   #     variables[-2] = normalized_ratio(band_stack[2], band_stack[0]).astype(np.float16)  # blue/red
         variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        print(np.nanquantile(variables[-2], [0.9]))
+        print(np.nanquantile(variables[-1], [0.9]))
+        print(np.nanquantile(variables[0], [0.9]))
+        print(np.nanquantile(variables[1], [0.9]))
+        print(np.nanquantile(variables[2], [0.9]))
         return variables
 
     @staticmethod
@@ -504,17 +530,11 @@ class RFTruckDetector:
             print("Wrote to: %s" % file_path)
 
     @staticmethod
-    def _add_background(out_pd, reflectances, ratios, ndvi, n_truth):
-#        std = np.nanstd(reflectances[0:3], 0)
- #       var = np.nanvar(reflectances[0:3], 0)
-  #      low_rgb_std = np.int8(std < np.nanquantile(std, [0.5]))
-    #    low_rgb_var = np.int8(var < np.nanquantile(var, [0.5]))
+    def _add_background(out_pd, reflectances, ratios, n_truth):
         # pick random indices from non nans
         not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
-       # not_nan_ndvi = np.int8(~np.isnan(ndvi))
-        not_nan_ndvi = np.ones_like(ratios[0], dtype=np.int8)
         not_nan_ratios = np.int8(~np.isnan(ratios))
-        not_nan = np.min(not_nan_reflectances, 0) * not_nan_ndvi * np.min(not_nan_ratios, 0)
+        not_nan = np.min(not_nan_reflectances, 0) * np.min(not_nan_ratios, 0)
         min_background, max_background = int(n_truth * 0.1), n_truth
         not_nan_y, not_nan_x = np.where(not_nan == 1)
         n_background = int(np.clip(np.count_nonzero(not_nan == 1) * 0.04,
@@ -527,17 +547,15 @@ class RFTruckDetector:
         row_idx = len(out_pd)
         for random_idx in zip(random_indices):
             y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
+            rgb = reflectances[0:3, y_arr_idx, x_arr_idx]
             out_pd.loc[row_idx, "label_int"] = 1
             out_pd.loc[row_idx, "label"] = "background"
             out_pd.loc[row_idx, "red"] = reflectances[0, y_arr_idx, x_arr_idx]
             out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
             out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
             out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
-            out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(reflectances[0:3, y_arr_idx, x_arr_idx], 0)
-       #     out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
+            out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
             out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
-       #     out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
-        #    out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
             out_pd.loc[row_idx, "green_blue_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
             row_idx += 1
         return out_pd
