@@ -24,11 +24,13 @@ dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archiv
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Hagenow_2018-11-16_2018-11-16_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Röstebachtalbrücke_2018-04-10_2018-04-10_merged.tiff")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
@@ -55,6 +57,7 @@ class RFTruckDetector:
         self.lat, self.lon, self.meta = None, None, None
         self.variables = None
         self.truth_path_tmp = None
+        self.mask = None
 
     def run(self, band_stack, truth_path):
         tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
@@ -108,7 +111,7 @@ class RFTruckDetector:
 
     def train(self, band_stack, truth_path, coeff):
         self.variables = self._build_variables(band_stack)
-        self._prepare_truth(truth_path, None, True)
+        self._prepare_truth(truth_path, None, False)
         try:
             self._split_train_test()
         except ValueError as e:
@@ -120,17 +123,21 @@ class RFTruckDetector:
                                     max_depth=MAX_DEPTH,
                                     bootstrap=BOOTSTRAP)
         rf.fit(self.vars["train"], self.labels["train"])
-#        self.rf_model = rf
-#        prediction_initial = self.predict()
- #       band_stack_copy = band_stack.copy()
-  #      band_stack_copy[:, prediction_initial != 1] = np.nan  # only variables where background has been classified
-   #     self._prepare_truth(truth_path, self._build_variables(band_stack_copy), True)
-    #    try:
-     #       self._split_train_test()
-      #  except ValueError as e:
-       #     raise e
-       # rf.fit(self.vars["train"], self.labels["train"])
-     #   test_pred = rf.predict(self.vars["test"])
+        self.rf_model = rf
+ #       prediction_initial = self.predict()
+        band_stack_copy = band_stack.copy()
+        #band_stack_copy[:, prediction_initial != 1] = np.nan  # only variables where background has been classified
+        band_stack_copy[:] *= self.mask
+        self._prepare_truth(truth_path, self._build_variables(band_stack_copy), True)
+       # band_stack_copy = band_stack.copy()
+        #band_stack_copy[:] *= self.mask
+        self.variables = self._build_variables(band_stack_copy)
+        try:
+            self._split_train_test()
+        except ValueError as e:
+            raise e
+        rf.fit(self.vars["train"], self.labels["train"])
+      #  test_pred = rf.predict(self.vars["test"])
      #   accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
        # print("RF accuracy: %s" % accuracy)
     #    self.variables = self._build_variables(band_stack)
@@ -190,6 +197,12 @@ class RFTruckDetector:
         bands_rescaled *= osm_mask
         bands_rescaled[bands_rescaled == 0] = np.nan
         osm_mask = None
+        self.mask = self.expose_anomalous_pixels(bands_rescaled)
+        meta = self.meta.copy()
+        meta["count"] = 1
+        meta["dtype"] = self.mask.dtype
+        with rio.open(os.path.join(dirs["main"], "test.tiff"), "w", **meta) as tgt:
+            tgt.write(self.mask, 1)
         return bands_rescaled
 
     def predict(self):
@@ -414,29 +427,41 @@ class RFTruckDetector:
         background_indices = np.where(truth_data["label"] == "background")[0]
         n = int(len(background_indices))
         n = n if add_background else int(n * 0.00001)
-        for idx in np.random.choice(background_indices, n, replace=False):
-            truth_data.drop(idx, inplace=True)
+       # for idx in np.random.choice(background_indices, n, replace=False):
+       #     truth_data.drop(idx, inplace=True)
         if add_background:
             truth_data.drop(truth_data[truth_data["label"] == "background"].index, inplace=True)
             truth_data.index = range(len(truth_data))
             n_labels = len(truth_data[truth_data["label"] != "background"])
-            red_blue_quantile = np.nanquantile(self.variables[-2], [0.9])
-            green_blue_quantile = np.nanquantile(self.variables[-1], [0.9])
-            blue_superior_red = np.count_nonzero(self.variables[2] > self.variables[0])
-            blue_superior_green = np.count_nonzero(self.variables[2] > self.variables[1])
+            blue_masked = self.variables[2].copy() * self.mask
+            green_masked = self.variables[1].copy() * self.mask
+            red_masked = self.variables[0].copy() * self.mask
+            blue_superior_red = np.count_nonzero(blue_masked > red_masked)
+            blue_superior_green = np.count_nonzero(blue_masked > green_masked)
+            combined = np.count_nonzero((blue_masked > red_masked) * (blue_masked > green_masked))
+            bg = normalized_ratio(blue_masked.astype(np.float64), green_masked.astype(np.float64))
+            br = normalized_ratio(blue_masked.astype(np.float64), red_masked.astype(np.float64))
+           # bg /= np.nanmean(bg)
+            #br /= np.nanmean(br)
+            combined = np.count_nonzero((bg > 0.05) * (br > 0.05))
             print(blue_superior_red)
             print(blue_superior_green)
+            print(combined)
+         #   print(n_superior_blue)
             n_pixels = np.count_nonzero(~np.isnan(self.variables[0]))
-            n_pixels_share = n_pixels * 0.01
             n_superior_blues = [blue_superior_red, blue_superior_green]
-            diff = np.max(n_superior_blues) - np.min(n_superior_blues)
-            n_superior_blue = np.mean(n_superior_blues) if diff < n_pixels_share else np.nanquantile(n_superior_blues, [0.25])
-            n_blue = n_superior_blue / n_pixels
+            n_superior_blues_min, n_superior_blues_max = np.min(n_superior_blues), np.max(n_superior_blues)
+            #n_blue = n_superior_blue / n_pixels
+            n_blue = combined / n_pixels
+            n_blue_scaled = -n_blue * 100 if n_blue < 0.1 else -n_blue * 10
+            n = np.clip(n_blue_scaled + 0.25, 0.005, 1)
             print(n_blue)
-            n = np.clip((-((n_blue * 100)**2) + 4.5), 0.75, 3)**2
             print(n)
-     #       truth_data = self._add_background(truth_data, vars_background[0:4], vars_background[-2:], n_labels * 20)
-            truth_data = self._add_background(truth_data, self.variables[0:4], self.variables[-2:],
+            reflectances_copy = self.variables[0:4].copy()
+            reflectances_copy[:, np.isnan(self.mask)] = np.nan
+            ratios_copy = self.variables[-2:]
+            ratios_copy[:, np.isnan(self.mask)] = np.nan
+            truth_data = self._add_background(truth_data, reflectances_copy, ratios_copy,
                                               int(n_labels * n))
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
@@ -465,11 +490,6 @@ class RFTruckDetector:
         variables[-3] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)  # reflectance std
         variables[-2] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
         variables[-1] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
-        print(np.nanquantile(variables[-2], [0.9]))
-        print(np.nanquantile(variables[-1], [0.9]))
-        print(np.nanquantile(variables[0], [0.9]))
-        print(np.nanquantile(variables[1], [0.9]))
-        print(np.nanquantile(variables[2], [0.9]))
         return variables
 
     @staticmethod
@@ -530,16 +550,12 @@ class RFTruckDetector:
             print("Wrote to: %s" % file_path)
 
     @staticmethod
-    def _add_background(out_pd, reflectances, ratios, n_truth):
+    def _add_background(out_pd, reflectances, ratios, n_background):
         # pick random indices from non nans
         not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
         not_nan_ratios = np.int8(~np.isnan(ratios))
         not_nan = np.min(not_nan_reflectances, 0) * np.min(not_nan_ratios, 0)
-        min_background, max_background = int(n_truth * 0.1), n_truth
         not_nan_y, not_nan_x = np.where(not_nan == 1)
-        n_background = int(np.clip(np.count_nonzero(not_nan == 1) * 0.04,
-                                   min_background,
-                                   max_background))
         try:
             random_indices = np.random.randint(0, len(not_nan_y), n_background)
         except ValueError:
@@ -586,6 +602,33 @@ class RFTruckDetector:
             b = bins[i]
             i += 1
         return descriptions[i - 1]
+
+    @staticmethod
+    def expose_anomalous_pixels(band_stack_np):
+        w = 9
+        y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
+        roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
+        for y in range(int(np.round(y_bound / w))):
+            for x in range(int(np.round(x_bound / w))):
+                y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
+                y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
+                y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
+                y_size, x_size = (y_up - y_low), (x_up - x_low)
+                n = y_size * x_size
+                subset = band_stack_np[:, y_low:y_up, x_low:x_up]
+                roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
+                roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
+                roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
+        diff_red = band_stack_np[0] - (roads[0] / 2)
+        diff_green = band_stack_np[1] - (roads[1] / 2)
+        diff_blue = band_stack_np[2] - (roads[2] / 2)
+        diff_stack = np.array([diff_red, diff_green, diff_blue])
+        mask = np.zeros_like(diff_stack[0])
+        for i in range(diff_stack.shape[0]):
+            mask += np.int8(diff_stack[i] > np.nanquantile(diff_stack[i], [0.75]))
+        mask[mask != 0] = 1
+        mask[mask == 0] = np.nan
+        return np.float32(mask)
 
 
 if __name__ == "__main__":
