@@ -49,7 +49,7 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
             tgt.write(osm_mask, 1)
     arr *= osm_mask
     arr[np.isnan(arr)] = 0.
-    arr = rescale(arr, 0, 1)
+    arr = rescale(arr.copy(), 0, 1)
     arr[arr == 0] = np.nan
     ndvi = normalized_ratio(arr[3], arr[0])
     n_bands = 3
@@ -403,6 +403,12 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios):
         row_idx = len(spectra_ml_pd)
         y, x = y[0], x[0]
         rgb = sub_reflectances[0:3, y, x]
+        if label == "red" and not all([rgb[0] > rgb[1], rgb[0] > rgb[2]]):
+            continue
+        if label == "green" and not all([rgb[1] > rgb[0], rgb[1] > rgb[2]]):
+            continue
+        if label == "blue" and not all([rgb[2] > rgb[1], rgb[2] > rgb[0]]):
+            continue
         spectra_ml_pd.loc[row_idx, "label"] = label
         spectra_ml_pd.loc[row_idx, "label_int"] = label_int
         spectra_ml_pd.loc[row_idx, "red"] = sub_reflectances[0, y, x]
@@ -411,7 +417,6 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios):
         spectra_ml_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
         spectra_ml_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
         spectra_ml_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
-        spectra_ml_pd.loc[row_idx, "reflectance_max_min_difference"] = np.nanmin(rgb, 0) / np.nanmax(rgb, 0)
         spectra_ml_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
         spectra_ml_pd.loc[row_idx, "green_red_ratio"] = sub_ratios[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue_red_ratio"] = sub_ratios[2, y, x]
@@ -439,7 +444,6 @@ def add_background(out_pd, reflectances, ratios, n_background):
         out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
         out_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
-        out_pd.loc[row_idx, "reflectance_max_min_difference"] = np.nanmin(rgb, 0) / np.nanmax(rgb, 0)
         out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
