@@ -1,5 +1,6 @@
 import os
 import glob
+import random
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -29,12 +30,10 @@ training_percentage = 80
 OSM_BUFFER = 40
 
 
-def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, spectra_ml_csv):
-    truth = pd.read_csv(truth_csv, index_col=0)
-    spectra = pd.read_csv(spectra_csv, index_col=0)
+def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
-    arr, meta = rio_read_all_bands(img_file)
-    osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(img_file))
+    arr, meta = rio_read_all_bands(image_file)
+    osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(image_file))
     if os.path.exists(osm_file):
         with rio.open(osm_file, "r") as src:
             osm_mask = src.read(1)
@@ -51,14 +50,13 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
     arr[np.isnan(arr)] = 0.
     arr = rescale(arr.copy(), 0, 1)
     arr[arr == 0] = np.nan
-    ndvi = normalized_ratio(arr[3], arr[0])
     n_bands = 3
     ratios = np.zeros((n_bands + 1, arr.shape[1], arr.shape[2]))
     ratio_counterparts = [2, 0, 0]
     for band_idx in range(n_bands):
         ratios[band_idx] = normalized_ratio(arr[band_idx], arr[ratio_counterparts[band_idx]])
     ratios[3] = normalized_ratio(arr[1], arr[2])  # add green vs. blue
-  #  ratios_diffs = expose_anomalous_pixels(ratios[0:3])
+    reflectance_difference_stack = expose_anomalous_pixels(arr)
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
@@ -73,85 +71,12 @@ def extract_statistics(img_file, boxes_gpd, n_retain, truth_csv, spectra_csv, sp
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
-        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios)
+        sub_diffs = reflectance_difference_stack[:, y0:y1 + 1, x0:x1 + 1].copy()
+        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, sub_diffs)
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-    spectra_ml = add_background(spectra_ml, arr, ratios, len(boxes_gpd))
-    #print("Number of truth features in csv: %s" % (str(len(truth))))
-   # truth.to_csv(truth_csv)
-   # spectra.to_csv(spectra_csv)
+    spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_gpd))
     spectra_ml.to_csv(spectra_ml_csv)
-
-
-def analyze_statistics(truth_csv, spectra_csv):
-    truth = pd.read_csv(truth_csv, index_col=0)
-    bg_thresholds = calc_ratio_thresholds(np.float32(truth.max_bg_ratio))
-    br_thresholds = calc_ratio_thresholds(np.float32(truth.max_br_ratio))
-    rb_thresholds = calc_ratio_thresholds1(np.float32(truth.min_rb_ratio), np.float32(truth.max_rb_ratio))
-    gb_thresholds = calc_ratio_thresholds1(np.float32(truth.min_gb_ratio), np.float32(truth.max_gb_ratio))
-    ndvi_thresholds = calc_ndvi_thresholds(np.float32(truth.max_ndvi))
-    max_distance_green = truth.max_dist_green
-    max_distance_red = truth.max_dist_red
-    max_max_distance_green = max_distance_green.max()
-    max_max_distance_red = max_distance_red.max()
-    min_max_distance_green = max_distance_green.min()
-    min_max_distance_red = max_distance_red.min()
-    mean_max_distance_green = max_distance_green.mean()
-    mean_max_distance_red = max_distance_red.mean()
-    thresholds = pd.DataFrame({"box_mean_red_high": [float(np.nanquantile(truth.mean_red, [0.98]))],
-                               "box_mean_green_high": [float(np.nanquantile(truth.mean_green, [0.98]))],
-                               "box_mean_blue_high": [float(np.nanquantile(truth.mean_blue, [0.98]))],
-                               "blue_low": [float(truth.mean_blue.min())],
-                               "green_low": [float(truth.mean_green.min())],
-                               "red_low": [float(truth.mean_red.min())],
-                               "blue_high": [float(np.quantile(truth.max_blue, q=[0.98]))],
-                               "green_high": [float(np.quantile(truth.max_green, q=[0.98]))],
-                               "red_high": [float(np.quantile(truth.max_red, q=[0.98]))],
-                               "bg_low": [float(bg_thresholds["ratio_low"])],
-                               "bg_high": [float(bg_thresholds["ratio_high"])],
-                               "bg_mean": [np.nanmean(truth.mean_bg_ratio)],
-                               "bg_std_mean": [np.nanstd(truth.mean_bg_ratio)],
-                               "br_low": [float(br_thresholds["ratio_low"])],
-                               "br_high": [float(br_thresholds["ratio_high"])],
-                               "br_mean": [np.nanmean(truth.mean_br_ratio)],
-                               "br_std_mean": [np.nanstd(truth.mean_br_ratio)],
-                               "rb_low": [float(rb_thresholds["ratio_low"])],
-                               "rb_high": [float(rb_thresholds["ratio_high"])],
-                               "gb_low": [float(gb_thresholds["ratio_low"])],
-                               "gb_high": [float(gb_thresholds["ratio_high"])],
-                               "ndvi_mean": [float(np.mean(truth.mean_ndvi))],
-                               "ndvi_std": [float(np.std(truth.mean_ndvi))],
-                               "max_max_dist_green": [float(max_max_distance_green)],
-                               "max_max_dist_red": [float(max_max_distance_red)],
-                               "min_max_dist_green": [float(min_max_distance_green)],
-                               "min_max_dist_red": [float(min_max_distance_red)],
-                               "mean_max_dist_green": [float(mean_max_distance_green)],
-                               "mean_max_dist_red": [float(mean_max_distance_red)],
-                               "red_green_spatial_angle_low": [float(np.nanquantile(truth.red_green_spatial_angle,
-                                                                                    q=[0.005]))],
-                               "red_green_spatial_angle_high": [float(np.nanquantile(truth.red_green_spatial_angle,
-                                                                                     q=[0.995]))],
-                               "min_red_green_spatial_angle": [float(np.nanmin(truth.red_green_spatial_angle))],
-                               "max_red_green_spatial_angle": [float(np.nanmax(truth.red_green_spatial_angle))],
-                               "mean_red_green_spatial_angle": [float(np.nanmean(truth.red_green_spatial_angle))],
-                               "std_red_green_spatial_angle": [float(np.nanstd(truth.red_green_spatial_angle))],
-                               "mean_skewness": [float(np.nanmean(truth["skewness"]))],
-                               "std_skewness": [float(np.nanstd(truth["skewness"]))],
-                               "mean_kurtosis": [float(np.nanmean(truth["kurtosis"]))],
-                               "std_kurtosis": [float(np.nanstd(truth["kurtosis"]))],
-                               "mean_std": [float(np.nanmean(truth["std"]))],
-                               "std_std": [float(np.nanstd(truth["std"]))],
-                               "min_std": [float(np.nanmin(truth["std"]))],
-                               "max_std": [float(np.nanmax(truth["std"]))],
-                               "min_std_at_max_blue": [float(np.nanmin(truth["std_at_max_blue"]))],
-                               "mean_std_at_max_blue": [float(np.nanmean(truth["std_at_max_blue"]))],
-                               "q1_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.005]))],
-                               "q99_std_at_max_blue": [float(np.nanquantile(truth["std_at_max_blue"], [0.995]))],
-                               "q1_mean_var": [float(np.nanquantile(truth["mean_var"], [0.005]))],
-                               "mean_std_var": [float(np.nanmean(truth["std_var"]))]})
-    print(thresholds)
-    thresholds.astype(np.float64).to_csv(os.path.join(os.path.dirname(truth_csv), "thresholds.csv"))
-    #cluster_spectra(spectra_csv, 10)
 
 
 def get_indices(a, value, b=None):
@@ -163,141 +88,6 @@ def get_indices(a, value, b=None):
         except TypeError:  # b not given
             indices = indices[:, 0]  # take first match
     return indices.flatten()
-
-
-def calc_blue_thresholds(maximum_blue):
-    return {"blue_low": np.nanquantile(maximum_blue, q=[0.01]),
-            "blue_high": np.nanquantile(maximum_blue, q=[0.99])}
-
-
-def calc_green_thresholds(maximum_green):
-    return {"green_low": np.nanquantile(maximum_green, q=[0.01]),
-            "green_high": np.nanquantile(maximum_green, q=[0.99])}
-
-
-def calc_red_thresholds(maximum_red):
-    return {"red_low": np.nanquantile(maximum_red, q=[0.01]),
-            "red_high": np.nanquantile(maximum_red, q=[0.99])}
-
-
-def calc_ratio_thresholds(max_ratio):
-    return {"ratio_low": np.nanquantile(max_ratio, [0.01]),
-            "ratio_high": np.nanquantile(max_ratio, [0.97])}
-
-
-def calc_ratio_thresholds1(min_ratio, max_ratio):
-    return {"ratio_low": np.nanquantile(min_ratio, [0.99]),
-            "ratio_high": np.nanquantile(max_ratio, [0.99])}
-
-
-def calc_ndvi_thresholds(maximum_ndvi):
-    return {"ndvi_high": np.nanquantile(maximum_ndvi, q=[0.70])}
-
-
-def calc_angles(stack, ratios, detections):
-    # spatio-spectral test
-    red, green, blue = stack[0].copy(), stack[1].copy(), stack[2].copy()
-    green_criteria = np.nansum(ratios[2:4], 0)
-    red_criteria = np.nansum(ratios[0:2], 0)
-    try:
-        blue_y, blue_x = [index[0] for index in np.where(detections == 1)]
-        green[blue_y, blue_x] = 0
-        green_y, green_x = crop_2d_indices(np.where(green_criteria == np.nanmax(green_criteria)))
-        red[blue_y, blue_x] = 0
-        red[green_y, green_x] = 0
-        red_y, red_x = crop_2d_indices(np.where(red_criteria == np.nanmax(red_criteria)))
-    except ValueError:
-        return
-    rgb_vector = np.hstack([ratios[4:6, blue_y, blue_x],
-                            ratios[2:4, green_y, green_x],
-                            ratios[0:2, red_y, red_x],
-                            ratios[6, blue_y, blue_x],
-                            ratios[6, green_y, green_x],
-                            ratios[6, red_y, red_x],
-                            ratios[7, blue_y, blue_x],
-                            ratios[7, green_y, green_x],
-                            ratios[7, red_y, red_x],
-                            stack[2, blue_y, blue_x],
-                            stack[2, green_y, green_x],
-                            stack[2, red_y, red_x],
-                            stack[1, green_y, green_x],
-                            stack[1, blue_y, blue_x],
-                            stack[1, red_y, red_x],
-                            stack[0, red_y, red_x],
-                            stack[0, blue_y, blue_x],
-                            stack[0, green_y, green_x]])
-    # spatial 2d vectors
-    blue_max_indices = [blue_y, blue_x]
-    blue_red_spatial_vector = calc_vector(blue_max_indices, [red_y, red_x])
-    blue_green_spatial_vector = calc_vector(blue_max_indices, [green_y, green_x])
-    red_green_spatial_angle = calc_vector_angle_in_degrees(blue_red_spatial_vector, blue_green_spatial_vector)
-    return {"rgb_vector": rgb_vector,
-            "red_green_spatial_angle": red_green_spatial_angle}
-
-
-def cluster_rgb_vectors(truth_csv, thresholds_csv, rgb_vectors_csv, num_clusters):
-    truth = pd.read_csv(truth_csv, index_col=0)
-    thresholds = pd.read_csv(thresholds_csv, index_col=0)
-    # vectors n*9
-    col_names = []
-    for i in range(7):
-        col_names = col_names + ["rgb_vector" + str(i) + str(j) for j in [0, 1, 2]]
-    vectors = np.vstack([truth[col] for col in col_names]).swapaxes(0, 1)
-    # cluster with KMeans
-    k_means = KMeans(n_clusters=n_clusters).fit(vectors)
-    # calculate mean of clusters
-    cluster_cores = np.zeros((num_clusters, vectors.shape[1]))
-    labels = k_means.labels_
-    for i, label in enumerate(np.unique(labels)):
-        label_match = np.where(labels == label)[0]
-        cluster_cores[i] = np.nanmean(vectors[label_match, :], axis=0)
-    # calculate all angles between clusters
-    rsquared = np.zeros(n_clusters)
-    slopes = np.zeros(n_clusters)
-    for i in range(n_clusters):
-        angles_cluster = []
-        slopes_cluster = []
-        for j in range(n_clusters):
-            if j != i:
-                regression = linregress(cluster_cores[i], cluster_cores[j])
-                angles_cluster.append(regression.rvalue)
-                slopes_cluster.append(regression.slope)
-        rsquared[i] = np.nanmean(np.array(angles_cluster))  # mean angle
-        slopes[i] = np.nanmean(slopes_cluster)
-    thresholds["min_rgb_rsquared"] = [float(np.nanmin(rsquared))]
-    thresholds["max_rgb_rsquared"] = [float(np.nanmax(rsquared))]
-    thresholds["mean_rgb_rsquared"] = [float(np.nanmean(rsquared))]
-    thresholds["std_rgb_rsquared"] = [float(np.nanstd(rsquared))]
-    thresholds["rgb_rsquared_low"] = [float(np.nanmin(rsquared))]
-    thresholds["rgb_rsquared_high"] = [float(np.nanmax(rsquared))]
-    thresholds["mean_slope"] = [float(np.nanmean(slopes))]
-    thresholds["max_slope"] = [float(np.nanmax(slopes))]
-    thresholds["min_slope"] = [float(np.nanmin(slopes))]
-    thresholds["std_slope"] = [float(np.nanstd(slopes))]
-    thresholds.to_csv(thresholds_csv)
-    rgb_vectors_pd = pd.DataFrame()
-    for i, idx in enumerate(col_names):
-        rgb_vectors_pd[idx] = cluster_cores[:, i]
-    rgb_vectors_pd.to_csv(rgb_vectors_csv)
-
-
-def cluster_spectra(spectra_csv, num_clusters):
-    spectra = pd.read_csv(spectra_csv)
-    vectors = np.vstack([spectra[col] for col in spectra.columns[1:]]).swapaxes(0, 1)
-    # cluster with KMeans
-    k_means = KMeans(n_clusters=n_clusters).fit(vectors)
-    # calculate mean of clusters
-    cluster_cores = np.zeros((num_clusters, vectors.shape[1]))
-    labels = k_means.labels_
-    for i, label in enumerate(np.unique(labels)):
-        label_match = np.where(labels == label)[0]
-        cluster_cores[i] = np.nanmean(vectors[label_match, :], axis=0)
-    spectra_cores = pd.DataFrame()
-    spectra_cores["B08"] = cluster_cores[:, 0]
-    spectra_cores["B02"] = cluster_cores[:, 1]
-    spectra_cores["B03"] = cluster_cores[:, 2]
-    spectra_cores["B04"] = cluster_cores[:, 3]
-    spectra_cores.to_csv(os.path.join(os.path.dirname(spectra_csv), "spectra_cores.csv"))
 
 
 def crop_2d_indices(indices):
@@ -378,7 +168,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios):
+def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_diffs):
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
     red_criteria = sub_copy[0] + sub_ratios_copy[0]
@@ -403,6 +193,7 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios):
         row_idx = len(spectra_ml_pd)
         y, x = y[0], x[0]
         rgb = sub_reflectances[0:3, y, x]
+        # ensure spectra are clear
         if label == "red" and not all([rgb[0] > rgb[1], rgb[0] > rgb[2]]):
             continue
         if label == "green" and not all([rgb[1] > rgb[0], rgb[1] > rgb[2]]):
@@ -421,10 +212,13 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios):
         spectra_ml_pd.loc[row_idx, "green_red_ratio"] = sub_ratios[1, y, x]
         spectra_ml_pd.loc[row_idx, "blue_red_ratio"] = sub_ratios[2, y, x]
         spectra_ml_pd.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
+        spectra_ml_pd.loc[row_idx, "red_difference"] = sub_diffs[0, y, x]
+        spectra_ml_pd.loc[row_idx, "green_difference"] = sub_diffs[1, y, x]
+        spectra_ml_pd.loc[row_idx, "blue_difference"] = sub_diffs[2, y, x]
     return spectra_ml_pd
 
 
-def add_background(out_pd, reflectances, ratios, n_background):
+def add_background(out_pd, reflectances, ratios, diffs, n_background):
     # pick random indices from non nans
     not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
 #    not_nan_ndvi = np.int8(~np.isnan(ndvi))
@@ -448,6 +242,9 @@ def add_background(out_pd, reflectances, ratios, n_background):
         out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green_blue_ratio"] = ratios[3, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "red_difference"] = diffs[0, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "green_difference"] = diffs[1, y_arr_idx, x_arr_idx]
+        out_pd.loc[row_idx, "blue_difference"] = diffs[2, y_arr_idx, x_arr_idx]
     return out_pd
 
 
@@ -464,7 +261,7 @@ def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
 
 
 def expose_anomalous_pixels(band_stack_np):
-    w = 1000
+    w = 9
     y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
     roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
     for y in range(int(np.round(y_bound / w))):
@@ -478,10 +275,10 @@ def expose_anomalous_pixels(band_stack_np):
             roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
             roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
             roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-    diff_red = band_stack_np[0] - (roads[0] / 2)
-    diff_green = band_stack_np[1] - (roads[1] / 2)
-    diff_blue = band_stack_np[2] - (roads[2] / 2)
-    diff_stack = np.array([diff_red, diff_green, diff_blue])
+    diff_red = (band_stack_np[0] - (roads[0] / 2)) / (band_stack_np[0] + (roads[0] / 2))
+    diff_green = (band_stack_np[1] - (roads[1] / 2)) / (band_stack_np[1] + (roads[1] / 2))
+    diff_blue = (band_stack_np[2] - (roads[2] / 2)) / (band_stack_np[2] + (roads[2] / 2))
+    diff_stack = np.float32([diff_red, diff_green, diff_blue])
     return diff_stack
 
 
@@ -508,25 +305,25 @@ if __name__ == "__main__":
         lens = np.int32([len(x) for x in imgs])
         img_file = imgs[np.where(lens == lens.min())[0]][0]
         boxes_truth = gpd.read_file(glob.glob(dir_truth_labels + os.sep + "*" + tile + "*.gpkg")[0])
-  #      n_boxes = len(boxes)
-   #     n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
-    #    n_validation = np.int32(np.round(n_boxes * (1 - (training_percentage / 100))))
-     #   boxes_range = list(range(n_boxes))
-      #  indices_training = random.sample(range(n_boxes), k=n_training)
-   #     for idx in indices_training:
-    #        del boxes_range[boxes_range.index(idx)]
-     #   indices_validation = boxes_range
-      #  boxes_training = boxes.iloc[indices_training]
-       # boxes_validation = boxes.iloc[indices_validation]
+        n_boxes = len(boxes_truth)
+        n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
+        n_validation = np.int32(np.round(n_boxes * (1 - (training_percentage / 100))))
+        boxes_range = list(range(n_boxes))
+        indices_training = random.sample(range(n_boxes), k=n_training)
+        for idx in indices_training:
+            del boxes_range[boxes_range.index(idx)]
+        indices_validation = boxes_range
+        boxes_training = boxes_truth.iloc[indices_training]
+        boxes_validation = boxes_truth.iloc[indices_validation]
         # save validation boxes
-       # boxes_validation.index = range(len(boxes_validation))
-        #boxes_validation.to_file(os.path.join(dir_truth_labels,
-         #                                     os.path.basename(img_file).split(".tif")[0] + "_validation.gpkg"),
-             #                    driver="GPKG")
+        boxes_validation.index = range(len(boxes_validation))
+        boxes_validation.to_file(os.path.join(dir_truth_labels,
+                                              os.path.basename(img_file).split(".tif")[0] + "_validation.gpkg"),
+                                 driver="GPKG")
         # extract stats from training boxes
-       # boxes_training.index = range(len(boxes_training))
+        boxes_training.index = range(len(boxes_training))
         extract_statistics(img_file, boxes_truth, int(tiles_pd[tiles_pd["training_tiles"] == tile]["n_retain"]),
-                           file_path_truth, file_path_spectra, file_path_spectra_ml)
+                           file_path_spectra_ml)
   #  analyze_statistics(file_path_truth, file_path_spectra)
   #  cluster_rgb_vectors(file_path_truth, os.path.join(dir_truth, "thresholds.csv"),
    #                     os.path.join(dir_truth, "rgb_vector_clusters.csv"), n_clusters)
