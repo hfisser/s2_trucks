@@ -6,9 +6,6 @@ import pandas as pd
 import geopandas as gpd
 import xarray as xr
 import rasterio as rio
-from sklearn.cluster import KMeans
-from scipy.stats import linregress
-
 from osm_utils.utils import get_roads, rasterize_osm
 from array_utils.io import rio_read_all_bands
 from array_utils.math import rescale, normalized_ratio
@@ -22,10 +19,9 @@ dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
 tiles = list(tiles_pd["training_tiles"])
-n_clusters = 50  # number of RGB vector clusters
 
 overwrite_truth_csv = True
-training_percentage = 80
+training_percentage = 85
 
 OSM_BUFFER = 40
 
@@ -63,10 +59,27 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     for row_idx in np.random.choice(boxes_gpd.index, int(np.clip(len(boxes_gpd) - n_retain, 0, 1e+10)), replace=False):
         boxes_gpd.drop(row_idx, inplace=True)
     boxes_gpd.index = range(len(boxes_gpd))
-    print(len(boxes_gpd))
-    n = len(boxes_gpd)
+    n_boxes = len(boxes_gpd)
+    n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
+    boxes_range = list(range(n_boxes))
+    indices_training = random.sample(range(n_boxes), k=n_training)
+    for idx in indices_training:
+        del boxes_range[boxes_range.index(idx)]
+    indices_validation = boxes_range
+    boxes_training = boxes_truth.iloc[indices_training]
+    boxes_validation = boxes_truth.iloc[indices_validation]
+    # save validation boxes
+    boxes_validation.index = range(len(boxes_validation))
+    boxes_validation.to_file(os.path.join(dir_truth_labels,
+                                          os.path.basename(image_file).split(".tif")[0] + "_validation.gpkg"),
+                             driver="GPKG")
+    # extract stats from training boxes
+    boxes_training.index = range(len(boxes_training))
+    print("Number of validation boxes: %s" % len(boxes_validation))
+    print("Number of training boxes: %s" % len(boxes_training))
+    n = len(boxes_training)
     for i in range(n):
-        box = boxes_gpd.geometry[i].bounds
+        box = boxes_training.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
@@ -75,7 +88,18 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, sub_diffs)
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
-    spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_gpd))
+    # ensure equal number of blueish, greenish and reddish spectra
+    labels = ["red", "green", "blue"]
+    n_given = [np.count_nonzero(spectra_ml["label"] == label) for label in labels]
+    n_given_min = min(n_given)
+    labels.remove(labels[np.where(np.int16(n_given) == n_given_min)[0][0]])
+    # adjust labels in order to have equal number
+    for label in labels:
+        indices = np.where(spectra_ml["label"] == label)[0]
+        for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
+            spectra_ml.drop(row, inplace=True)
+        spectra_ml.index = range(len(spectra_ml))
+    spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_training))
     spectra_ml.to_csv(spectra_ml_csv)
 
 
@@ -168,7 +192,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_diffs):
+def extract_rgb_spectra(training_spectra_pd, sub_reflectances, sub_ratios, sub_diffs):
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
     red_criteria = sub_copy[0] + sub_ratios_copy[0]
@@ -183,14 +207,14 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_diffs):
         blue_criteria = sub_copy[2] + sub_ratios_copy[2]
         blue_y, blue_x = np.where(blue_criteria == np.nanmax(blue_criteria))
     except IndexError:
-        return spectra_ml_pd
+        return training_spectra_pd
     if len(red_y) == 0 or len(green_y) == 0 or len(blue_y) == 0:
-        return spectra_ml_pd
+        return training_spectra_pd
     for label, label_int, y, x in zip(("red", "green", "blue"),
                                       (4, 3, 2),
                                       [red_y, green_y, blue_y],
                                       [red_x, green_x, blue_x]):
-        row_idx = len(spectra_ml_pd)
+        row_idx = len(training_spectra_pd)
         y, x = y[0], x[0]
         rgb = sub_reflectances[0:3, y, x]
         # ensure spectra are clear
@@ -200,22 +224,19 @@ def extract_rgb_spectra(spectra_ml_pd, sub_reflectances, sub_ratios, sub_diffs):
             continue
         if label == "blue" and not all([rgb[2] > rgb[1], rgb[2] > rgb[0]]):
             continue
-        spectra_ml_pd.loc[row_idx, "label"] = label
-        spectra_ml_pd.loc[row_idx, "label_int"] = label_int
-        spectra_ml_pd.loc[row_idx, "red"] = sub_reflectances[0, y, x]
-        spectra_ml_pd.loc[row_idx, "green"] = sub_reflectances[1, y, x]
-        spectra_ml_pd.loc[row_idx, "blue"] = sub_reflectances[2, y, x]
-        spectra_ml_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
-        spectra_ml_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
-        spectra_ml_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
-        spectra_ml_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
-        spectra_ml_pd.loc[row_idx, "green_red_ratio"] = sub_ratios[1, y, x]
-        spectra_ml_pd.loc[row_idx, "blue_red_ratio"] = sub_ratios[2, y, x]
-        spectra_ml_pd.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
-        spectra_ml_pd.loc[row_idx, "red_difference"] = sub_diffs[0, y, x]
-        spectra_ml_pd.loc[row_idx, "green_difference"] = sub_diffs[1, y, x]
-        spectra_ml_pd.loc[row_idx, "blue_difference"] = sub_diffs[2, y, x]
-    return spectra_ml_pd
+        training_spectra_pd.loc[row_idx, "label"] = label
+        training_spectra_pd.loc[row_idx, "label_int"] = label_int
+        training_spectra_pd.loc[row_idx, "red"] = sub_reflectances[0, y, x]
+        training_spectra_pd.loc[row_idx, "green"] = sub_reflectances[1, y, x]
+        training_spectra_pd.loc[row_idx, "blue"] = sub_reflectances[2, y, x]
+        training_spectra_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
+        training_spectra_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
+        training_spectra_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
+        training_spectra_pd.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
+        training_spectra_pd.loc[row_idx, "red_difference"] = sub_diffs[0, y, x]
+        training_spectra_pd.loc[row_idx, "green_difference"] = sub_diffs[1, y, x]
+        training_spectra_pd.loc[row_idx, "blue_difference"] = sub_diffs[2, y, x]
+    return training_spectra_pd
 
 
 def add_background(out_pd, reflectances, ratios, diffs, n_background):
@@ -237,10 +258,7 @@ def add_background(out_pd, reflectances, ratios, diffs, n_background):
         out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
-        out_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
         out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "green_red_ratio"] = ratios[1, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "blue_red_ratio"] = ratios[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green_blue_ratio"] = ratios[3, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "red_difference"] = diffs[0, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "green_difference"] = diffs[1, y_arr_idx, x_arr_idx]
@@ -278,8 +296,7 @@ def expose_anomalous_pixels(band_stack_np):
     diff_red = (band_stack_np[0] - (roads[0] / 2)) / (band_stack_np[0] + (roads[0] / 2))
     diff_green = (band_stack_np[1] - (roads[1] / 2)) / (band_stack_np[1] + (roads[1] / 2))
     diff_blue = (band_stack_np[2] - (roads[2] / 2)) / (band_stack_np[2] + (roads[2] / 2))
-    diff_stack = np.float32([diff_red, diff_green, diff_blue])
-    return diff_stack
+    return np.float32([diff_red, diff_green, diff_blue])
 
 
 if __name__ == "__main__":
@@ -305,26 +322,5 @@ if __name__ == "__main__":
         lens = np.int32([len(x) for x in imgs])
         img_file = imgs[np.where(lens == lens.min())[0]][0]
         boxes_truth = gpd.read_file(glob.glob(dir_truth_labels + os.sep + "*" + tile + "*.gpkg")[0])
-        n_boxes = len(boxes_truth)
-        n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
-        n_validation = np.int32(np.round(n_boxes * (1 - (training_percentage / 100))))
-        boxes_range = list(range(n_boxes))
-        indices_training = random.sample(range(n_boxes), k=n_training)
-        for idx in indices_training:
-            del boxes_range[boxes_range.index(idx)]
-        indices_validation = boxes_range
-        boxes_training = boxes_truth.iloc[indices_training]
-        boxes_validation = boxes_truth.iloc[indices_validation]
-        # save validation boxes
-        boxes_validation.index = range(len(boxes_validation))
-        boxes_validation.to_file(os.path.join(dir_truth_labels,
-                                              os.path.basename(img_file).split(".tif")[0] + "_validation.gpkg"),
-                                 driver="GPKG")
-        # extract stats from training boxes
-        boxes_training.index = range(len(boxes_training))
         extract_statistics(img_file, boxes_truth, int(tiles_pd[tiles_pd["training_tiles"] == tile]["n_retain"]),
                            file_path_spectra_ml)
-  #  analyze_statistics(file_path_truth, file_path_spectra)
-  #  cluster_rgb_vectors(file_path_truth, os.path.join(dir_truth, "thresholds.csv"),
-   #                     os.path.join(dir_truth, "rgb_vector_clusters.csv"), n_clusters)
-
