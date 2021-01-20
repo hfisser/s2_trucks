@@ -23,6 +23,8 @@ from detect_trucks.RandomForestTrucks import RFTruckDetector
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_validation = os.path.join(dir_main, "validation")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
+dir_training = os.path.join(dir_main, "training")
+dir_s2_subsets = os.path.join(dir_main, "data", "s2", "subsets")
 truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
 aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
 
@@ -138,7 +140,7 @@ class Validator:
         # transform to EPSG:4326
         t, epsg_4326 = meta["transform"], "EPSG:4326"
         bands_preprocessed = detector.preprocess_bands(band_stack, dir_osm)
-        detector.train(bands_preprocessed, truth_csv, 10)
+        detector.train(bands_preprocessed, truth_csv)
         prediction = detector.predict()
         prediction_boxes = detector.extract_objects(prediction)
         try:
@@ -157,7 +159,7 @@ class Validator:
         self.lat = np.sort(np.unique(lats))[::-1]
         self.lon = np.sort(np.unique(lons))
 
-    def validate(self):
+    def validate_with_bast(self):
         try:
             validation_pd = pd.read_csv(self.validation_file)
         except FileNotFoundError:
@@ -195,6 +197,24 @@ class Validator:
             except TypeError:
                 validation_pd.loc[idx, column] = np.nan
         validation_pd.to_csv(self.validation_file)
+
+    def validate_boxes(self):
+        tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
+        tiles = list(tiles_pd["training_tiles"])
+        for tile in tiles:
+            imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
+            lens = np.int32([len(x) for x in imgs])
+            img_file = imgs[np.where(lens == lens.min())[0]][0]
+            rf_td = RFTruckDetector()
+            band_data = rf_td.read_bands(img_file)
+            band_data_preprocessed = rf_td.preprocess_bands(band_data, dir_osm)
+            rf_td.train(band_data_preprocessed, truth_csv)
+            prediction_array = rf_td.predict()
+            prediction_boxes = rf_td.extract_objects(prediction_array)
+            name = os.path.basename(img_file).split(".tif")[0]
+            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(dir_main, name + "_raster"))
+            rf_td.prediction_boxes_to_gpkg(prediction_boxes, os.path.join(dir_main, name + "_boxes"))
+            print()
 
     def prepare_s2_counts(self):
         osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], OSM_BUFFER,
@@ -310,6 +330,7 @@ if __name__ == "__main__":
     for station, acquisition_period in stations.items():
         print("Station: %s" % station)
         validator = Validator(station, aois_file, dir_validation, dir_osm)
+        validator.validate_boxes()
         validator.detect(acquisition_period)
-        validator.validate()
+        validator.validate_with_bast()
     validation = pd.read_csv(os.path.join(dir_validation, "validation_run.csv"))
