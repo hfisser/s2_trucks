@@ -13,14 +13,11 @@ from OSMPythonTools.overpass import overpassQueryBuilder, Overpass
 
 
 def buffer_bbox(bbox_osm, ref_arr):
-    offset_lat, offset_lon = 0.5, 0.5
-    if ref_arr is not None:
-        offset_lat = 0.1
-        offset_lon = 1
+    offset_lat, offset_lon = 0.15, 0.15
     bbox_osm[0] -= offset_lat  # min lat
     bbox_osm[1] -= offset_lon  # min lon
     bbox_osm[2] += offset_lat  # max lat
-    bbox_osm[3] += 2  # max lon
+    bbox_osm[3] += offset_lon  # max lon
     return bbox_osm
 
 

@@ -68,7 +68,7 @@ def transform_lat_lon(lat, lon):
 def metadata_to_bbox_epsg4326(metadata):
     t, src_crs = metadata["transform"], metadata["crs"]
     tgt_crs = "EPSG:4326"
-    a, b = t * [0, 0], t * [metadata["height"], metadata["width"]]
+    a, b = t * [0, 0], t * [metadata["width"], metadata["height"]]
     src_corners = np.array([a[0], b[1], b[0], a[1]]).flatten()
     transformer = Transformer.from_crs(str(src_crs), tgt_crs)
     x0, y0 = transformer.transform(src_corners[0], src_corners[3])
