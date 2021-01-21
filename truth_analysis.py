@@ -56,26 +56,26 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
-    for row_idx in np.random.choice(boxes_gpd.index, int(np.clip(len(boxes_gpd) - n_retain, 0, 1e+10)), replace=False):
-        boxes_gpd.drop(row_idx, inplace=True)
-    boxes_gpd.index = range(len(boxes_gpd))
-    n_boxes = len(boxes_gpd)
-    n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
-    boxes_range = list(range(n_boxes))
-    indices_training = random.sample(range(n_boxes), k=n_training)
-    for idx in indices_training:
-        del boxes_range[boxes_range.index(idx)]
-    indices_validation = boxes_range
-    boxes_training = boxes_truth.iloc[indices_training]
-    boxes_validation = boxes_truth.iloc[indices_validation]
-    # save validation boxes
-    boxes_validation.index = range(len(boxes_validation))
-    boxes_validation.to_file(os.path.join(dir_truth_labels,
-                                          os.path.basename(image_file).split(".tif")[0] + "_validation.gpkg"),
-                             driver="GPKG")
-    # extract stats from training boxes
-    boxes_training.index = range(len(boxes_training))
-    print("Number of validation boxes: %s" % len(boxes_validation))
+  #  for row_idx in np.random.choice(boxes_gpd.index, int(np.clip(len(boxes_gpd) - n_retain, 0, 1e+10)), replace=False):
+ #       boxes_gpd.drop(row_idx, inplace=True)
+#    boxes_gpd.index = range(len(boxes_gpd))
+   # n_boxes = len(boxes_gpd)
+  #  n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
+ #   boxes_range = list(range(n_boxes))
+#    indices_training = random.sample(range(n_boxes), k=n_training)
+   # for idx in indices_training:
+  #      del boxes_range[boxes_range.index(idx)]
+ #   indices_validation = boxes_range
+#    boxes_training = boxes_truth.iloc[indices_training]
+   # boxes_validation = boxes_truth.iloc[indices_validation]
+  #  # save validation boxes
+ #   boxes_validation.index = range(len(boxes_validation))
+#    boxes_validation.to_file(os.path.join(dir_truth_labels,
+   #                                       os.path.basename(image_file).split(".tif")[0] + "_validation.gpkg"),
+  #                           driver="GPKG")
+ #   # extract stats from training boxes
+#    boxes_training.index = range(len(boxes_training))
+    boxes_training = boxes_gpd
     print("Number of training boxes: %s" % len(boxes_training))
     n = len(boxes_training)
     for i in range(n):
