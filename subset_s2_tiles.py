@@ -18,8 +18,8 @@ dir_write = os.path.join(os.path.dirname(dir_s2), "subsets")
 number_subsets = 1
 roads_buffer = 40
 tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"), sep=";")
-training_tiles = list(tiles_pd["training_tiles"])
-tiles = training_tiles
+tiles = list(tiles_pd["training_tiles"])
+tiles = list(tiles_pd["validation_tiles"])
 
 
 def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
@@ -134,5 +134,11 @@ if __name__ == "__main__":
         except IndexError:
             continue
         if tile in tiles:
+            try:
+                is_nan = np.isnan(tile)
+            except TypeError:  # it's a str
+                pass
+            else:
+                continue
             print("Processing: " + os.path.basename(directory))
             subset(directory, number_subsets, roads_buffer, dir_osm_roads, dir_write)
