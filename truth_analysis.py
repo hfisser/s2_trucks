@@ -76,9 +76,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
  #   # extract stats from training boxes
 #    boxes_training.index = range(len(boxes_training))
     boxes_training = boxes_gpd
-    print("Number of training boxes: %s" % len(boxes_training))
-    n = len(boxes_training)
-    for i in range(n):
+    for i in np.random.choice(list(range(len(boxes_training))), n_retain, replace=False):
         box = boxes_training.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
@@ -88,17 +86,18 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, sub_diffs)
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
+    print("Number of training boxes: %s" % n_retain)
     # ensure equal number of blueish, greenish and reddish spectra
-    labels = ["red", "green", "blue"]
-    n_given = [np.count_nonzero(spectra_ml["label"] == label) for label in labels]
-    n_given_min = min(n_given)
-    labels.remove(labels[np.where(np.int16(n_given) == n_given_min)[0][0]])
-    # adjust labels in order to have equal number
-    for label in labels:
-        indices = np.where(spectra_ml["label"] == label)[0]
-        for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
-            spectra_ml.drop(row, inplace=True)
-        spectra_ml.index = range(len(spectra_ml))
+#    labels = ["red", "green", "blue"]
+ #   n_given = [np.count_nonzero(spectra_ml["label"] == label) for label in labels]
+  #  n_given_min = min(n_given)
+   # labels.remove(labels[np.where(np.int16(n_given) == n_given_min)[0][0]])
+    ## adjust labels in order to have equal number
+    #for label in labels:
+    #    indices = np.where(spectra_ml["label"] == label)[0]
+    #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
+    #        spectra_ml.drop(row, inplace=True)
+    #    spectra_ml.index = range(len(spectra_ml))
     spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_training))
     spectra_ml.to_csv(spectra_ml_csv)
 
@@ -217,13 +216,6 @@ def extract_rgb_spectra(training_spectra_pd, sub_reflectances, sub_ratios, sub_d
         row_idx = len(training_spectra_pd)
         y, x = y[0], x[0]
         rgb = sub_reflectances[0:3, y, x]
-        # ensure spectra are clear
-        if label == "red" and not all([rgb[0] > rgb[1], rgb[0] > rgb[2]]):
-            continue
-        if label == "green" and not all([rgb[1] > rgb[0], rgb[1] > rgb[2]]):
-            continue
-        if label == "blue" and not all([rgb[2] > rgb[1], rgb[2] > rgb[0]]):
-            continue
         training_spectra_pd.loc[row_idx, "label"] = label
         training_spectra_pd.loc[row_idx, "label_int"] = label_int
         training_spectra_pd.loc[row_idx, "red"] = sub_reflectances[0, y, x]
@@ -279,7 +271,7 @@ def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
 
 
 def expose_anomalous_pixels(band_stack_np):
-    w = 9
+    w = 50
     y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
     roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
     for y in range(int(np.round(y_bound / w))):
