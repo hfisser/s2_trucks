@@ -21,16 +21,37 @@ class SentinelHub:
             self.sh_config.sh_client_id = content.split("SH_CLIENT_ID = ")[1].split("\n")[0]
             self.sh_config.sh_client_secret = content.split("SH_CLIENT_SECRET = ")[1].split("\n")[0]
 
-    def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None):
-        # try if split returns several boxes, then it must be split into several boxes and called separately
+    def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None, merged_file=None):
         if len(self.split_box(bbox, resolution)) > 1:
-            raise ValueError("bbox is larger than 2500 pixels on at least one axis. Call split_box() and retrieve"
-                             "data separately")
+            self.get_data_large_aoi(bbox, period, dataset, bands, resolution, dir_save, merged_file)
         sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
         request = sh_request_builder.request(self.sh_config, dir_save)
         data = request.get_data(save_data=dir_save is not None)
         print("Retrieved data of shape: %s" % str(data[0].shape))
         return data[0], request.data_folder
+
+    def get_data_large_aoi(self, bbox, period, dataset, bands, resolution, dir_save, merged_file):
+        splitted_boxes = sh.split_box(bbox, resolution)
+        files = []
+        for i, bbox in enumerate(splitted_boxes):
+            curr_s2_data_file = os.path.join(dir_save, "s2_date%s_%s_bbox%s" % (period[0], period[1], i))
+            files.append(curr_s2_data_file)
+            if not os.path.exists(merged_file) and not os.path.exists(curr_s2_data_file):
+                band_stack, dir_data = sh.get_data(bbox, period, DataCollection.SENTINEL2_L2A, band_names,
+                                                   resolution, self.dirs["s2"])
+                folders = glob(os.path.join(dir_data, "*"))
+                folders.remove(dir_save_archive)
+                if len(folders) > 1:
+                    print("Several files, don't know which to read from %s" % self.dirs["s2"])
+                    raise FileNotFoundError
+                else:
+                    folder = folders[0]
+                    reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
+                    if os.path.exists(folder) and os.path.exists(curr_s2_data_file):
+                        shutil.rmtree(folder)  # remove original download file
+                    else:
+                        time.sleep(10)
+                        shutil.rmtree(folder)
 
     @staticmethod
     def split_box(bbox_epsg4326, res):
