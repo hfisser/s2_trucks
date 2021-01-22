@@ -4,6 +4,7 @@ import numpy as np
 import xarray as xr
 import geopandas as gpd
 import pandas as pd
+import fiona
 from shapely import geometry
 from pyproj import Transformer
 from rasterio.transform import Affine
@@ -57,7 +58,10 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
         gdf = gpd.GeoDataFrame({"index": [1]},
                                geometry=[geometry.box(src_corners[0], src_corners[1], src_corners[2], src_corners[3])],
                                crs=str(src_crs))
-        gdf.to_file(gpkg_out, driver="GPKG")
+        try:
+            gdf.to_file(gpkg_out, driver="GPKG")
+        except fiona.errors.DriverError:
+            pass
         # get OSM data and mask data to roads
         osm_file = get_roads(bbox_epsg4326, ["motorway", "trunk", "primary"], osm_buffer,
                              dir_osm, fname_pure + "osm_roads", str(src_crs))
@@ -70,6 +74,7 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
         data = np.zeros((n_bands, h, w), dtype=np.float32)
         for i in range(n_bands):
             data[i] = stack.read(i+1)
+        stack.close()
         tgt_pixels_y, tgt_pixels_x = int(h/n), int(w/n)
         src_lat = get_lat(src_corners, h)
         src_lon = get_lon(src_corners, w)
@@ -87,7 +92,7 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
                     ref_xr = xr.DataArray(data=np.zeros((len(tgt_lat), len(tgt_lon))),
                                           coords={"lat": tgt_lat, "lon": tgt_lon},
                                           dims=["lat", "lon"])
-                    osm_raster = rasterize_osm(osm_vec, ref_xr)
+                    osm_raster = rasterize_osm(osm_vec, ref_xr).astype(np.float32)
                     osm_raster[osm_raster != 0] = 1
                     osm_raster[osm_raster == 0] = np.nan
                     t = stack.transform
@@ -99,6 +104,7 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
                         for i in range(n_bands):
                             data_band = rescale(data[i, y1:y2, x1:x2].astype(np.float32), 0., 1.)
                             tgt.write((data_band * osm_raster).astype(np.float32), i+1)
+                    os.remove(file_stack)
 
 
 def get_lat(bbox, h, step=None):
