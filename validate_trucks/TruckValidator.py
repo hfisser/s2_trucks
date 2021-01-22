@@ -9,7 +9,7 @@ import pandas as pd
 import xarray as xr
 from glob import glob
 from shutil import copyfile
-from shapely.geometry import Point
+from shapely.geometry import Point, box
 from shapely.geometry.linestring import LineString
 from fiona.errors import DriverError
 from rasterio.merge import merge
@@ -21,13 +21,15 @@ from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
+dir_data = os.path.join(dir_main, "data")
 dir_validation = os.path.join(dir_main, "validation")
+dir_labels = os.path.join(dir_data, "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 dir_training = os.path.join(dir_main, "training")
-dir_s2_subsets = os.path.join(dir_main, "data", "s2", "subsets")
+dir_s2_subsets = os.path.join(dir_data, "s2", "subsets")
 truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
 aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
-
+boxes_validation_file = os.path.join(dir_validation, "boxes_validation.csv")
 
 SH_CREDENTIALS_FILE = os.path.join("F:" + os.sep + "sh", "sh.txt")
 BAST_URL = "https://www.bast.de/BASt_2017/DE/Verkehrstechnik/Fachthemen/v2-verkehrszaehlung/Aktuell/" \
@@ -39,6 +41,8 @@ NAME_TR2 = "Lkw_R2"
 
 OSM_BUFFER = 25
 hour, minutes, year = 11, 20, 2018
+
+validate = "boxes"
 
 stations = dict()
 stations_pd = pd.read_csv(os.path.join(os.path.dirname(aois_file), "validation_stations.csv"), sep=";")
@@ -198,24 +202,6 @@ class Validator:
                 validation_pd.loc[idx, column] = np.nan
         validation_pd.to_csv(self.validation_file)
 
-    def validate_boxes(self):
-        tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
-        tiles = list(tiles_pd["training_tiles"])
-        for tile in tiles:
-            imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
-            lens = np.int32([len(x) for x in imgs])
-            img_file = imgs[np.where(lens == lens.min())[0]][0]
-            rf_td = RFTruckDetector()
-            band_data = rf_td.read_bands(img_file)
-            band_data_preprocessed = rf_td.preprocess_bands(band_data, dir_osm)
-            rf_td.train(band_data_preprocessed, truth_csv)
-            prediction_array = rf_td.predict()
-            prediction_boxes = rf_td.extract_objects(prediction_array)
-            name = os.path.basename(img_file).split(".tif")[0]
-            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(dir_main, name + "_raster"))
-            rf_td.prediction_boxes_to_gpkg(prediction_boxes, os.path.join(dir_main, name + "_boxes"))
-            print()
-
     def prepare_s2_counts(self):
         osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], OSM_BUFFER,
                              self.dirs["osm"],
@@ -243,6 +229,54 @@ class Validator:
         self.detections = gpd.GeoDataFrame(detections_within, crs=self.detections.crs)
 
     @staticmethod
+    def validate_boxes():
+        tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
+        try:
+            boxes_validation_pd = pd.read_csv(boxes_validation_file)
+        except FileNotFoundError:
+            boxes_validation_pd = pd.DataFrame()
+        tiles = list(tiles_pd["validation_tiles"])
+        for tile in tiles:
+            print(tile)
+            imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
+            lens = np.int32([len(x) for x in imgs])
+            img_file = imgs[np.where(lens == lens.max())[0]][0]
+            # detect on whole array
+            rf_td = RFTruckDetector()
+            band_data = rf_td.read_bands(img_file)
+            band_data_preprocessed = rf_td.preprocess_bands(band_data, dir_osm)
+            rf_td.train(band_data_preprocessed, truth_csv)
+            prediction_array = rf_td.predict()
+            prediction_boxes = rf_td.extract_objects(prediction_array)
+            name = os.path.basename(img_file).split(".tif")[0]
+            prediction_boxes_file = os.path.join(dir_validation, name + "_boxes")
+            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(dir_validation, name + "_raster"))
+            rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
+            # read labels
+            validation_boxes = gpd.read_file(os.path.join(dir_labels,
+                                                          os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
+            extent = validation_boxes.total_bounds
+            prediction_boxes_clipped = gpd.clip(prediction_boxes, box(extent[0], extent[1], extent[2], extent[3]))
+            producer_n, user_n = 0, 0
+            for prediction_box in prediction_boxes_clipped.geometry:
+                for validation_box in validation_boxes.geometry:
+                    if prediction_box.intersects(validation_box):
+                        producer_n += 1
+                        break
+            for validation_box in validation_boxes.geometry:
+                for prediction_box in prediction_boxes_clipped.geometry:
+                    if validation_box.intersects(prediction_box):
+                        user_n += 1
+                        break
+            row_idx = len(boxes_validation_pd)
+            boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
+            boxes_validation_pd.loc[row_idx, "producer_percentage"] = producer_n / len(prediction_boxes_clipped) * 100
+            boxes_validation_pd.loc[row_idx, "user_percentage"] = user_n / len(validation_boxes) * 100
+            boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes_clipped)
+            boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
+            boxes_validation_pd.to_csv(boxes_validation_file)
+
+    @staticmethod
     def get_station_meta(bast_station_name):
         """
         gets UTM coordinates of BAST traffic count station from BAST webpage
@@ -259,7 +293,6 @@ class Validator:
             except IndexError:
                 continue
             if name == bast_station_name:
-                print(name)
                 # get color as road type marker
                 color = station_row.split(",red,")
                 if len(color) == 1:
@@ -327,10 +360,16 @@ if __name__ == "__main__":
         os.remove(os.path.join(dir_validation, "validation_run.csv"))
     except FileNotFoundError:
         pass
+    try:
+        os.remove(boxes_validation_file)
+    except FileNotFoundError:
+        pass
     for station, acquisition_period in stations.items():
-        print("Station: %s" % station)
         validator = Validator(station, aois_file, dir_validation, dir_osm)
-        validator.validate_boxes()
-        validator.detect(acquisition_period)
-        validator.validate_with_bast()
-    validation = pd.read_csv(os.path.join(dir_validation, "validation_run.csv"))
+        if validate == "boxes":
+            validator.validate_boxes()
+            break
+        else:
+            print("Station: %s" % station)
+            validator.detect(acquisition_period)
+            validator.validate_with_bast()
