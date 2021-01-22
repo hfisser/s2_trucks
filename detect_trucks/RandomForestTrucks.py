@@ -29,10 +29,14 @@ s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Hagenow_2018-11-16_2018-11-16_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Bockel_2018-11-16_2018-11-16_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schwandorf-Mitte_2018-07-03_2018-07-03_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Wurmberg_2018-09-27_2018-09-27_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Zimmern_ob_Rottweil_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Röstebachtalbrücke_2018-04-10_2018-04-10_merged.tiff")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
-s2_file = os.path.join(dirs["imgs"], "S2B_MSIL2A_20200327T101629_N0214_R065_T32UNA_20200327T134849.tif")
+#s2_file = os.path.join(dirs["imgs"], "S2B_MSIL2A_20200327T101629_N0214_R065_T32UNA_20200327T134849.tif")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
 
 do_tuning = False
@@ -139,7 +143,7 @@ class RFTruckDetector:
         for band_idx in range(self.variables[0:3].shape[0]):
             high_reflectance_mask += np.float32(self.variables[band_idx] < np.nanquantile(self.variables[band_idx],
                                                                                           [0.98]))
-        self.variables[:, high_reflectance_mask < 2] = np.nan  # at least two bands should be lower
+        self.variables[:, high_reflectance_mask < 1] = np.nan  # at least two bands should be lower
     #    self.variables[:] *= self.background_mask
         vars_reshaped = []
         for band_idx in range(self.variables.shape[0]):
@@ -364,14 +368,13 @@ class RFTruckDetector:
             blue_masked = self.variables[2].copy() * self.background_mask
             green_masked = self.variables[1].copy() * self.background_mask
             red_masked = self.variables[0].copy() * self.background_mask
-            blue_superior_red = np.count_nonzero(blue_masked > red_masked)
-            blue_superior_green = np.count_nonzero(blue_masked > green_masked)
             combined = np.count_nonzero((blue_masked > red_masked) * (blue_masked > green_masked))
             n_pixels = np.count_nonzero(~np.isnan(self.variables[0]))
             n_pixels_scaled = (((n_pixels / 1e+6) ** 2) + 1) ** 2 - 1
             n_blue = combined / n_pixels
             n_blue_scaled = -n_blue * 100 if n_blue < 0.1 else -n_blue * 10
-            n = np.clip((n_blue_scaled + n_pixels_scaled + 1), 0.01, 2)
+            n = np.clip((n_blue_scaled + n_pixels_scaled + 1.3), 0.3, 2)
+            print(n_pixels_scaled)
             print(n_blue)
             print(n)
             not_background = ~np.isnan(self.background_mask)  # not background
