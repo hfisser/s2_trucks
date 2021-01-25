@@ -1,6 +1,11 @@
 import os
 import utm
+import time
+import shutil
 import numpy as np
+import rasterio as rio
+from glob import glob
+from rasterio.merge import merge
 from shapely.geometry import Polygon, box
 from sentinelhub import SHConfig, DataCollection, CRS, BBoxSplitter
 from SentinelHubDataAccess.RequestBuilder import RequestBuilder
@@ -22,36 +27,66 @@ class SentinelHub:
             self.sh_config.sh_client_secret = content.split("SH_CLIENT_SECRET = ")[1].split("\n")[0]
 
     def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None, merged_file=None):
-        if len(self.split_box(bbox, resolution)) > 1:
-            self.get_data_large_aoi(bbox, period, dataset, bands, resolution, dir_save, merged_file)
-        sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
-        request = sh_request_builder.request(self.sh_config, dir_save)
-        data = request.get_data(save_data=dir_save is not None)
-        print("Retrieved data of shape: %s" % str(data[0].shape))
-        return data[0], request.data_folder
+        if merged_file is not None and os.path.exists(merged_file):
+            with rio.open(merged_file, "r") as src:
+                data = np.zeros((src.count, src.height, src.width))
+                for band_idx in range(data.shape[0]):
+                    data[band_idx] = src.read(band_idx + 1)
+            return data, os.path.dirname(merged_file)
+        else:
+            if len(self.split_box(bbox, resolution)) > 1:
+                return self.get_data_large_aoi(bbox, period, dataset, bands, resolution, dir_save, merged_file)
+            else:
+                sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
+                request = sh_request_builder.request(self.sh_config, dir_save)
+                data = request.get_data(save_data=dir_save is not None)[0]
+                print("Retrieved data of shape: %s" % str(data[0].shape))
+                return data, request.data_folder
 
     def get_data_large_aoi(self, bbox, period, dataset, bands, resolution, dir_save, merged_file):
-        splitted_boxes = sh.split_box(bbox, resolution)
+        splitted_boxes = self.split_box(bbox, resolution)
+        dir_save_tmp = os.path.join(dir_save, "tmp")
         files = []
         for i, bbox in enumerate(splitted_boxes):
-            curr_s2_data_file = os.path.join(dir_save, "s2_date%s_%s_bbox%s" % (period[0], period[1], i))
+            if not os.path.exists(dir_save_tmp):
+                os.mkdir(dir_save_tmp)
+            curr_s2_data_file = os.path.join(dir_save_tmp, "s2_date%s_%s_bbox%s.tiff" % (period[0], period[1], i))
             files.append(curr_s2_data_file)
-            if not os.path.exists(merged_file) and not os.path.exists(curr_s2_data_file):
-                band_stack, dir_data = sh.get_data(bbox, period, DataCollection.SENTINEL2_L2A, band_names,
-                                                   resolution, self.dirs["s2"])
-                folders = glob(os.path.join(dir_data, "*"))
-                folders.remove(dir_save_archive)
+            if os.path.exists(merged_file):
+                with rio.open(merged_file, "r") as src:
+                    merged_stack = np.zeros((src.count, src.height, src.width))
+                    for band_idx in range(src.count):
+                        merged_stack[band_idx] = src.read(band_idx + 1)
+                return merged_file, merged_stack
+            elif os.path.exists(curr_s2_data_file):
+                pass
+            else:
+                band_stack, dir_out = self.get_data(bbox, period, dataset, bands, resolution, dir_save_tmp)
+                folders = list(set(glob(os.path.join(dir_out, "*"))) - set(glob(os.path.join(dir_out, "*.tiff"))))
                 if len(folders) > 1:
-                    print("Several files, don't know which to read from %s" % self.dirs["s2"])
+                    print("Several files, don't know which to read from %s" % dir_save)
                     raise FileNotFoundError
                 else:
                     folder = folders[0]
-                    reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
+                    copied = shutil.copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
                     if os.path.exists(folder) and os.path.exists(curr_s2_data_file):
                         shutil.rmtree(folder)  # remove original download file
                     else:
                         time.sleep(10)
                         shutil.rmtree(folder)
+        with rio.open(files[0], "r") as src:
+            meta = src.meta  # get meta
+        merged_stack, transform = merge(files)
+        meta = dict(transform=transform, height=merged_stack.shape[1], width=merged_stack.shape[2],
+                    count=merged_stack.shape[0], driver="GTiff", dtype=merged_stack.dtype,
+                    crs=meta["crs"])
+        with rio.open(merged_file, "w", **meta) as tgt:
+            for i in range(merged_stack.shape[0]):
+                tgt.write(merged_stack[i], i+1)
+        for file in files:  # delete the sub aoi files
+            os.remove(file)
+        shutil.rmtree(dir_save_tmp)
+        return merged_stack, os.path.dirname(merged_file)
 
     @staticmethod
     def split_box(bbox_epsg4326, res):
@@ -88,8 +123,8 @@ if __name__ == "__main__":
     band_names = ["B08", "B04", "B03", "B02", "CLM"]
     dataset_name = DataCollection.SENTINEL2_L2A
     spatial_resolution = 10
-    dir_out = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\data\\s2\\sentinel_hub"
+    dir_write = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\data\\s2\\sentinel_hub"
     sh = SentinelHub()
     sh.set_credentials(creds_file)
     band_data, dir_data = sh.get_data(aoi, time_period, dataset_name, band_names, spatial_resolution,
-                                      dir_out)
+                                      dir_write)
