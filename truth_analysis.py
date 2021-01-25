@@ -98,7 +98,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
     #        spectra_ml.drop(row, inplace=True)
     #    spectra_ml.index = range(len(spectra_ml))
-    spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_training))
+    spectra_ml = add_background(spectra_ml, arr, ratios, reflectance_difference_stack, len(boxes_training) * 4)
     spectra_ml.to_csv(spectra_ml_csv)
 
 
