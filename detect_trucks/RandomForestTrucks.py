@@ -17,16 +17,18 @@ from array_utils.math import rescale, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 from osm_utils.utils import get_roads, rasterize_osm
 
+from scipy.stats import skew
+
 dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
 #s2_file = os.path.join(dirs["main"], "schuby_test.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
@@ -65,7 +67,7 @@ class RFTruckDetector:
         self.lat, self.lon, self.meta = None, None, None
         self.variables = None
         self.truth_path_tmp = None
-        self.background_mask, self.low_var_mask = None, None
+        self.background_mask, self.high_variance_mask, self.low_ndvi_mask = None, None, None
 
     def train(self):
         rf = RandomForestClassifier(n_estimators=N_ESTIMATORS,
@@ -115,8 +117,8 @@ class RFTruckDetector:
         band_stack = band_stack[0:4]
      #   band_stack[np.isnan(band_stack)] = 0
         bands_rescaled = band_stack.copy()
-      #  bands_rescaled = rescale(band_stack.copy(), 0, 1)
-       # bands_rescaled[bands_rescaled == 0] = np.nan
+   #     bands_rescaled = rescale(band_stack.copy(), 0, 1)
+    #    bands_rescaled[bands_rescaled == 0] = np.nan
         band_stack = None
         self.lat, self.lon = lat_from_meta(self.meta), lon_from_meta(self.meta)
         if subset_box is not None:
@@ -137,7 +139,7 @@ class RFTruckDetector:
     def predict(self):
         self.lat, self.lon = lat_from_meta(self.meta), lon_from_meta(self.meta)
         t0 = datetime.now()
-        self.variables[:, self.low_var_mask == 0] = np.nan  # set nan high reflectance background
+        self.variables[:, self.low_ndvi_mask == 0] = np.nan
         vars_reshaped = []
         for band_idx in range(self.variables.shape[0]):
             vars_reshaped.append(self.variables[band_idx].flatten())
@@ -153,6 +155,16 @@ class RFTruckDetector:
         predictions_shaped[predictions_shaped == 0] = np.nan
         predictions_shaped[predictions_shaped > 4] = 1
         self._elapsed(t0)
+        print(np.count_nonzero(predictions_shaped == 3))
+        predictions_shaped[np.int8(self.high_variance_mask == 0) * np.int8(predictions_shaped != 2) == 1] = np.nan
+        print(np.count_nonzero(predictions_shaped == 3))
+
+        meta = self.meta.copy()
+        meta["count"] = 1
+        meta["dtype"] = np.int8
+        with rio.open(os.path.join(dirs["main"], "mask1.tiff"), "w", **meta) as tgt:
+            tgt.write(np.int8(self.high_variance_mask == 0) * np.int8(predictions_shaped != 2), 1)
+
         return predictions_shaped.astype(np.int8)
 
     def extract_objects(self, predictions_arr):
@@ -167,7 +179,9 @@ class RFTruckDetector:
             subset_3 = self._get_arr_subset(preds, y_blue, x_blue, 3).copy()
             too_much_background = np.count_nonzero(subset_3 > 1) < 2
             too_many_blue = np.count_nonzero(subset_3 == 2) > 4
-            if too_much_background or too_many_blue:
+            too_many_green = np.count_nonzero(subset_3 == 3) > 3
+            too_many_red = np.count_nonzero(subset_3 == 4) > 3
+            if too_much_background or any([too_many_blue, too_many_green, too_many_red]):
                 continue
             half_idx_y = y_blue if subset_15.shape[0] < sub_size else int(subset_15.shape[0] * 0.5)
             half_idx_x = x_blue if subset_15.shape[1] < sub_size else int(subset_15.shape[1] * 0.5)
@@ -177,21 +191,26 @@ class RFTruckDetector:
                 half_idx_y, half_idx_x = int(sub_size / 2), int(sub_size / 2)  # index from lower edge is ok
                 current_value = subset_15[half_idx_y, half_idx_x]
             new_value = 100
-            # eliminate reds directly neighboring blue (only in preds copy), not 3x3 window -> only '+'
-            for y_off, x_off in zip([-1, 0, 0, 1], [0, -1, 1, 0]):
-                this_y = np.clip(half_idx_y + y_off, 0, subset_15.shape[0] - 1)
-                this_x = np.clip(half_idx_x + x_off, 0, subset_15.shape[1] - 1)
+            # eliminate reds directly neighboring blue (only in preds copy)
+            y_edge, x_edge = subset_15.shape[0] - 1, subset_15.shape[1] - 1
+            for y_off, x_off in zip([-1, -1, -1, 0, 0, 0, 1, 1, 1], [-1, 0, 1] * 3):
+                this_y = np.clip(half_idx_y + y_off, 0, y_edge)
+                this_x = np.clip(half_idx_x + x_off, 0, x_edge)
                 if subset_15[this_y, this_x] == 4:
                     subset_15[this_y, this_x] = 0
+     #       # eliminate greens that do not have near red (2 distance)
+      #      for y_off, x_off in zip([-1, -2, 0, 0, 0, 0, 1, 2], [0, 0, -1, -2, 1, 2, 0, 0]):
+       #         this_y = np.clip(half_idx_y + y_off, 0, y_edge)
+        #        this_x = np.clip(half_idx_x + x_off, 0, x_edge)
+         #       if subset_15
             if not all([value in subset_15 for value in [2, 3, 4]]):
                 continue
-            cluster, yet_seen_indices, yet_seen_values, joker_played = self._cluster_array(arr=subset_15,
-                                                                                           point=[half_idx_y, half_idx_x],
-                                                                                           new_value=new_value,
-                                                                                           current_value=current_value,
-                                                                                           yet_seen_indices=[],
-                                                                                           yet_seen_values=[],
-                                                                                           joker_played=False)
+            cluster, yet_seen_indices, yet_seen_values = self._cluster_array(arr=subset_15,
+                                                                             point=[half_idx_y, half_idx_x],
+                                                                             new_value=new_value,
+                                                                             current_value=current_value,
+                                                                             yet_seen_indices=[],
+                                                                             yet_seen_values=[])
             if np.count_nonzero(cluster == new_value) < 3:
                 continue
             # add neighboring blue in 3x3 window around blue
@@ -213,9 +232,11 @@ class RFTruckDetector:
             box_preds = predictions_arr[ymin:ymax, xmin:xmax]
             all_given = all([value in box_preds for value in [2, 3, 4]])
             large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
+            n_pixels_box = box_preds.shape[0] * box_preds.shape[1]
+            too_many = any([np.count_nonzero(box_preds == value) > (n_pixels_box * 0.5) for value in [2, 3, 4]])
             too_large = box_preds.shape[0] > 5 or box_preds.shape[1] > 5
             too_large += box_preds.shape[0] > 4 and box_preds.shape[1] > 4
-            if too_large > 0 or not all_given or not large_enough:
+            if too_large > 0 or too_many or not all_given or not large_enough:
                 continue
             # calculate direction
             blue_y, blue_x = np.where(box_preds == 2)
@@ -254,7 +275,7 @@ class RFTruckDetector:
         self._elapsed(t0)
         return out_gpd
 
-    def _cluster_array(self, arr, point, new_value, current_value, yet_seen_indices, yet_seen_values, joker_played):
+    def _cluster_array(self, arr, point, new_value, current_value, yet_seen_indices, yet_seen_values):
         """
         looks for non zeros in 3x3 window around point in array and assigns a new value to these non-zeros
         :param arr: np array
@@ -276,8 +297,7 @@ class RFTruckDetector:
         window_3x3_without_corners = self._eliminate_array_corners(window_3x3.copy(), 1)
         # try matches in 3x3 window, if none given in 3x3 without corner
         ys, xs, window_idx = [], [], 0
-        windows = [window_3x3_without_corners, window_3x3, window_4x4]
-        windows = windows[0:2] if current_value == 4 or joker_played else windows
+        windows = [window_3x3_without_corners, window_3x3]
         offset_y, offset_x = 0, 0
         while len(ys) == 0 and window_idx < len(windows):
             window = windows[window_idx]
@@ -304,16 +324,15 @@ class RFTruckDetector:
                 n_picks = [np.count_nonzero(np.array(yet_seen_values) == value) for value in [2, 3, 4]]
                 if n_picks[2] > n_picks[0] and n_picks[2] > n_picks[1]:
                     break  # finish clustering in order to avoid picking many reds at the edge of object
-                if any([n > 4 for n in n_picks]):
-                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values, joker_played
-                arr_modified, yet_seen_indices, yet_seen_values, joker_played = self._cluster_array(arr_modified, [y, x],
+                if any([n > 5 for n in n_picks]):
+                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values
+                arr_modified, yet_seen_indices, yet_seen_values = self._cluster_array(arr_modified, [y, x],
                                                                                                     new_value,
                                                                                                     current_value,
                                                                                                     yet_seen_indices,
-                                                                                                    yet_seen_values,
-                                                                                                    joker_played)
+                                                                                                    yet_seen_values)
         arr_modified[point[0], point[1]] = new_value
-        return arr_modified, yet_seen_indices, yet_seen_values, joker_played
+        return arr_modified, yet_seen_indices, yet_seen_values
 
     def read_bands(self, file_path):
         try:
@@ -355,19 +374,22 @@ class RFTruckDetector:
     def _prepare_truth(self, add_background):
         truth_data = pd.read_csv(truth_path, index_col=0)
         label = "background"
-   #     b = ["background" in label for label in truth_data["label"]]
+        b = ["background" in label for label in truth_data["label"]]
+     #   b = truth_data["label"] == "background_low_var"
    #     truth_data.loc[b, "label"] = np.repeat("background", np.count_nonzero(b))
     #    truth_data.loc[b, "label_int"] = np.repeat(1, np.count_nonzero(b))
-    #    truth_data.drop(truth_data[b].index, inplace=True)
+        truth_data.drop(truth_data[b].index, inplace=True)
         rgb = np.float32([truth_data["red"], truth_data["green"], truth_data["blue"]])
         nir = truth_data["nir"]
         truth_data["ndvi"] = (nir - rgb[0]) / (nir + rgb[0])
         truth_data["red_green_ratio"] = (rgb[0] - rgb[1]) / (rgb[0] + rgb[1])
+        truth_data["rgb_max"] = np.nanmax(rgb, 0)
+        truth_data["rgb_sum"] = np.nansum(rgb, 0)
     #    for label in ["background_no_vegetation", "background_medium_vegetation", "background_vegetation"]:
-        for row_idx in np.random.choice(np.where(truth_data["label"] == label)[0],
-                                        int(np.count_nonzero(truth_data["label"] == label) * 0.99), replace=False):
-            truth_data.drop(row_idx, inplace=True)
-        print(np.count_nonzero(truth_data["label"] == "background"))
+    #    for row_idx in np.random.choice(np.where(truth_data["label"] == label)[0],
+     #                                   int(np.count_nonzero(truth_data["label"] == label) * 0.99), replace=False):
+      #      truth_data.drop(row_idx, inplace=True)
+        print(np.count_nonzero(truth_data["label"] == "background_high_ndvi"))
         truth_data.index = list(range(len(truth_data)))
         # mask upper reflectance quantile
         if add_background:
@@ -396,19 +418,11 @@ class RFTruckDetector:
     def _split_train_test(self):
         truth_data = pd.read_csv(self.truth_path_tmp, index_col=0)
         labels = truth_data["label_int"]
-        variables = [truth_data["red"],
-                     truth_data["green"],
-                     truth_data["blue"],
-                     truth_data["reflectance_var"],
-                     truth_data["red_blue_ratio"],
-                     truth_data["green_blue_ratio"],
-                     truth_data["red_green_ratio"],
-                     truth_data["ndvi"]]
+        truth_data["reflectance_var"] /= 100
         variables = [truth_data["reflectance_var"],
                      truth_data["red_blue_ratio"],
-                     truth_data["green_blue_ratio"]]
-              #       truth_data["red_green_ratio"],
-              #       truth_data["ndvi"]]
+                     truth_data["green_blue_ratio"],
+                     truth_data["rgb_max"]]
         variables = np.float32(variables).swapaxes(0, 1)
         vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.15)
         self.vars = dict(train=vars_train, test=vars_test)
@@ -417,21 +431,31 @@ class RFTruckDetector:
     def _build_variables(self, band_stack):
         self.background_mask, reflectance_difference_stack = self.expose_anomalous_pixels(band_stack)
         var = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
-        self.low_var_mask = np.int8(var > np.nanquantile(var, [0.5]))
+        self.high_variance_mask = np.int8(var > np.nanquantile(var, [0.6]))
+        print(np.nanquantile(var, [0.6]))
+        self.high_reflectance_mask = np.ones_like(band_stack[0])
+        self.high_reflectance_mask *= np.int8(band_stack[0] < np.nanquantile(band_stack[0], [0.99]))
+        self.high_reflectance_mask *= np.int8(band_stack[1] < np.nanquantile(band_stack[1], [0.99]))
+        self.high_reflectance_mask *= np.int8(band_stack[2] < np.nanquantile(band_stack[2], [0.99]))
+        self.low_ndvi_mask = np.int8(normalized_ratio(band_stack[3], band_stack[0]) < 0.7)
         meta = self.meta.copy()
         meta["count"] = 1
         meta["dtype"] = np.float32
         with rio.open(os.path.join(dirs["main"], "mask.tiff"), "w", **meta) as tgt:
-            tgt.write(self.background_mask.astype(np.float32), 1)
+            tgt.write(self.high_variance_mask.astype(np.float32), 1)
         shape = band_stack.shape
-        variables = np.zeros((3, shape[1], shape[2]), dtype=np.float16)
-   #     variables[0] = band_stack[0] / 255
-   #     variables[1] = band_stack[1] / 255
-    #    variables[2] = band_stack[2] / 255
-        variables[0] = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
+        variables = np.zeros((4, shape[1], shape[2]), dtype=np.float16)
+#        variables[0] = band_stack[0] / 255
+ #       variables[1] = band_stack[1] / 255
+       # variables[0] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)
+        variables[0] = np.nanvar(band_stack[0:3], 0, dtype=np.float16) / 100
         variables[1] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
         variables[2] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
-#        variables[3] = normalized_ratio(band_stack[0], band_stack[1]).astype(np.float16)  # red/green
+        variables[3] = np.nanmax(band_stack[0:3])
+     #   variables[3] = normalized_ratio(np.float32(variables[0]), np.float32(variables[1]))
+      #  variables[4] = normalized_ratio(np.float32(variables[0]), np.float32(variables[2]))
+       # variables[3] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)
+  #      variables[3] = normalized_ratio(band_stack[0], band_stack[1]).astype(np.float16)  # red/green
     #    variables[3] = normalized_ratio(band_stack[3], band_stack[0]).astype(np.float16)
         meta = self.meta
         meta["count"] = variables.shape[0]
