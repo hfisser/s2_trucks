@@ -16,7 +16,18 @@ dir_validation = os.path.join(dir_main, "validation")
 dir_validation_data = os.path.join(dir_validation, "data", "s2", "archive")
 
 aoi_file_path = os.path.join(dir_comparison, "aoi_h_bs.geojson")
-process_dates = ["10.04.2018"]
+process_dates = ["10-04-2018",
+                 "20-04-2018",
+                 "07-05-2018",
+                 "20-05-2018",
+                 "22-05-2018",
+                 "06-06-2018",
+                 "11-06-2018",
+                 "24-07-2018",
+                 "03-08-2018",
+                 "23-08-2018",
+                 "19-09-2018",
+                 "12-10-2018"]
 
 
 class Comparison:
@@ -29,7 +40,7 @@ class Comparison:
             print("Processing: %s" % date)
             sh = SentinelHub()
             sh.set_credentials(SH_CREDENTIALS_FILE)
-            sh_bbox = tuple(list(self.bbox.iloc[0]))
+            sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
             merged_file = os.path.join(dir_validation_data, "s2_bands_%s.tiff"
                                        % "_".join([str(coord) for coord in sh_bbox]))
             band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
