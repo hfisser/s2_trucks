@@ -26,8 +26,8 @@ dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")#
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")#
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Hagenow_2018-11-16_2018-11-16_merged.tiff")
@@ -82,9 +82,9 @@ class RFTruckDetector:
         self._prepare_truth(False)
         self._split_train_test()
         rf.fit(self.vars["train"], self.labels["train"])
-    #    test_pred = rf.predict(self.vars["test"])
-     #   accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
-      #  print("RF accuracy: %s" % accuracy)
+        test_pred = rf.predict(self.vars["test"])
+        accuracy = metrics.accuracy_score(self.labels["test"], test_pred)
+        print("RF accuracy: %s" % accuracy)
     #    self.variables = self._build_variables(band_stack)
         try:
             os.remove(self.truth_path_tmp)
@@ -155,7 +155,7 @@ class RFTruckDetector:
        # predictions_shaped = vars_reshaped[:, 0].copy()
         #predictions_shaped[not_nan] = predictions_flat
         #predictions_shaped = predictions_shaped.reshape((self.variables.shape[1], self.variables.shape[2]))
-        probabilities_shaped = vars_reshaped[:, 0:4].copy()
+        probabilities_shaped = vars_reshaped[:, 0:3].copy()
         for idx in range(predictions_flat.shape[1]):
             probabilities_shaped[not_nan, idx] = predictions_flat[:, idx]
         probabilities_shaped = np.swapaxes(probabilities_shaped, 0, 1)
@@ -164,22 +164,32 @@ class RFTruckDetector:
                                                              self.variables.shape[2]))
         probabilities_shaped[np.isnan(probabilities_shaped)] = 0
         meta = self.meta.copy()
-        meta["count"] = 4
+        meta["count"] = probabilities_shaped.shape[0]
         meta["dtype"] = np.float32
         with rio.open(os.path.join(dirs["main"], "probs.tiff"), "w", **meta) as tgt:
             for i in range(probabilities_shaped.shape[0]):
                 tgt.write(probabilities_shaped[i].astype(np.float32), i + 1)
       #  predictions_shaped[predictions_shaped == 0] = np.nan
       #  probabilities_shaped[probabilities_shaped > 4] = 1
-        probabilities_shaped[0, probabilities_shaped[0] < 0.7] = 0
-        probabilities_shaped[1, probabilities_shaped[1] < 0.7] = 0
-        probabilities_shaped[2, probabilities_shaped[2] < 0.7] = 0
-        probabilities_shaped[3, probabilities_shaped[3] < 0.6] = 0
+#        probabilities_shaped[0, probabilities_shaped[0] < 0.5] = 0
+ #       probabilities_shaped[1, probabilities_shaped[1] < 0.7] = 0
+  #      probabilities_shaped[2, probabilities_shaped[2] < 0.8] = 0
+   #     probabilities_shaped[3, probabilities_shaped[3] < 0.6] = 0
+#        probabilities_shaped[0, probabilities_shaped[0] < 0.8] = -1
+ #       probabilities_shaped[1, probabilities_shaped[1] < 0.9] = -1
+  #      probabilities_shaped[2, probabilities_shaped[2] < 0.7] = -1
         self.probabilities = probabilities_shaped
-        classification = np.argmax(probabilities_shaped, 0) + 1
+#        classification = np.argmax(probabilities_shaped, 0) + 1
+        classification = np.argmax(probabilities_shaped, 0) + 2
+        classification[(probabilities_shaped[0] < 0.5) * (classification == 2)] = 1
+        classification[(probabilities_shaped[1] < 0.5) * (classification == 3)] = 1
+        classification[(probabilities_shaped[2] < 0.5) * (classification == 4)] = 1
         classification[self.low_ndvi_mask == 0] = 0
         classification[(np.int8(self.blue_ratio_mask == 0) * np.int8(classification == 2)) == 1] = 0
         classification[self.low_reflectance_mask == 0] = 0
+        #classification[(np.int8(self.std_mask_blue == 0) * np.int8(classification == 2)) == 1] = 1
+        classification[(np.int8(self.std_mask_green == 0) * np.int8(classification == 3)) == 1] = 0
+        classification[(np.int8(self.std_mask_red == 0) * np.int8(classification == 4)) == 1] = 0
         self._elapsed(t0)
      #   predictions_shaped[self.max_mask == 0] = np.nan
    #     predictions_shaped[(predictions_shaped >= 3.5) * (predictions_shaped < 4)] = 4
@@ -187,22 +197,18 @@ class RFTruckDetector:
      #   predictions_shaped[(predictions_shaped > 1.9) * (predictions_shaped < 2.5)] = 2
       #  predictions_shaped[predictions_shaped <= 1.9] = 1
        # predictions_shaped[(predictions_shaped != 1) * (predictions_shaped != 2) * (predictions_shaped != 3) * (predictions_shaped != 4)] = np.nan
-        probabilities_shaped[(np.int8(self.std_mask_red == 0) * np.int8(probabilities_shaped == 4)) == 1] = np.nan
-        probabilities_shaped[(np.int8(self.std_mask_green == 0) * np.int8(probabilities_shaped == 3)) == 1] = np.nan
-        probabilities_shaped[(np.int8(self.blue_ratio_mask == 0) * np.int8(probabilities_shaped == 2)) == 1] = np.nan
+     #   probabilities_shaped[(np.int8(self.std_mask_red == 0) * np.int8(probabilities_shaped == 4)) == 1] = np.nan
+     #   probabilities_shaped[(np.int8(self.std_mask_green == 0) * np.int8(probabilities_shaped == 3)) == 1] = np.nan
+      #  probabilities_shaped[(np.int8(self.blue_ratio_mask == 0) * np.int8(probabilities_shaped == 2)) == 1] = np.nan
         return classification.astype(np.int8)
 
     def extract_objects(self, predictions_arr):
-        with rio.open("C:\\Users\\Lenovo\\Downloads\\test90.tif") as src:
-            predictions_arr = src.read(1)
-        import matplotlib.pyplot as plt
-        plt.imshow(predictions_arr)
-
         t0 = datetime.now()
         preds = predictions_arr.copy()  # copy because will be modified
         blue_ys, blue_xs = np.where(preds == 2)
+        out_gpd = gpd.GeoDataFrame(crs=self.meta["crs"])
         detection_boxes, directions, direction_descriptions, speeds, mean_probabilities, sub_size = [], [], [], [], [], 7
-        for y_blue, x_blue in zip(blue_ys, blue_xs):
+        for y_blue, x_blue, row_idx in zip(blue_ys, blue_xs, range(len(blue_ys))):
             if preds[y_blue, x_blue] == 0:
                 continue
           #  subset_9 = self._get_arr_subset(preds, y_blue, x_blue, 9).copy()
@@ -277,7 +283,8 @@ class RFTruckDetector:
             ymax, xmax = np.max(cluster_ys) + 1, np.max(cluster_xs) + 1
             # check if blue, green and red are given in box and box is large enough, otherwise drop
             box_preds = predictions_arr[ymin:ymax, xmin:xmax]
-            box_probs = self.probabilities[1:, ymin:ymax, xmin:xmax]
+            #box_probs = self.probabilities[1:, ymin:ymax, xmin:xmax]
+            box_probs = self.probabilities[:, ymin:ymax, xmin:xmax]
             max_prob_blue = np.nanmax(box_probs[0] * (box_preds == 2))
             max_prob_green = np.nanmax(box_probs[1] * (box_preds == 3))
             max_prob_red = np.nanmax(box_probs[2] * (box_preds == 4))
@@ -302,8 +309,6 @@ class RFTruckDetector:
             direction = self.calc_vector_direction_in_degree(blue_red_vector)
             diameter = np.max(box_preds.shape) * 10 / 2  # 10 m resolution
             speed = (diameter * (3600 / SECONDS_OFFSET_B02_B04)) * 0.001
-            # set cells from cluster and all blue cells to zero value in predictions array
-            preds[ymin:ymax, xmin:xmax] = np.int8(box_preds != 2)  # set blue cells in preds within box to zero
             # create output box
             lon_min, lat_min = self.lon[xmin], self.lat[ymin]
             try:
@@ -316,21 +321,23 @@ class RFTruckDetector:
             except IndexError:
                 lat_max = self.lat[-1] + (self.lat[-1] - self.lat[-2])
             cluster_box = Polygon(box(lon_min, lat_min, lon_max, lat_max))
-            if mean_prob > 0.75:
-                detection_boxes.append(cluster_box)
-                mean_probabilities.append(mean_prob)
-                directions.append(direction)
-                direction_descriptions.append(self.direction_degree_to_description(direction))
-                speeds.append(speed)
-            else:
-                continue
-        out_gpd = gpd.GeoDataFrame({"id": list(range(1, len(detection_boxes) + 1)),
-                                    "detection_probability": mean_probabilities,
-                                    "direction_degree": directions,
-                                    "direction_description": direction_descriptions,
-                                    "speed": speeds},
-                                   geometry=detection_boxes,
-                                   crs=self.meta["crs"])
+        #    if mean_prob > 0.85:
+            # set box cells to zero value in predictions array
+            preds[ymin:ymax, xmin:xmax] *= np.zeros_like(box_preds)
+            blue_indices = np.where(box_preds == 2)
+            for y_blue, x_blue in zip(blue_indices[0], blue_indices[1]):  # 3x3 around cell blues to 0
+                ymin, ymax = np.clip(y_blue - 1, 0, preds.shape[0]), np.clip(y_blue + 2, 0, preds.shape[0])
+                xmin, xmax = np.clip(x_blue - 1, 0, preds.shape[1]), np.clip(x_blue + 2, 0, preds.shape[1])
+                preds[ymin:ymax, xmin:xmax] *= np.int8(preds[ymin:ymax, xmin:xmax] != 2)
+            if mean_prob > 0.6:
+                for key, value in zip(["geometry", "id", "detection_probability", "max_blue_probability",
+                                       "max_green_probability", "max_red_probability", "direction_degree",
+                                       "direction_description", "speed"],
+                                      [cluster_box, row_idx + 1, mean_prob, max_prob_blue, max_prob_green, max_prob_red,
+                                       direction, self.direction_degree_to_description(direction), speed]):
+                    out_gpd.loc[row_idx, key] = value
+#            else:
+ #               continue
         self._elapsed(t0)
         return out_gpd
 
@@ -439,41 +446,18 @@ class RFTruckDetector:
     def _prepare_truth(self, add_background):
         truth_data = pd.read_csv(truth_path, index_col=0)
         label = "background"
-    #    b = ["background" in label for label in truth_data["label"]]
+        b = ["background" in label for label in truth_data["label"]]
     #    truth_data[truth_data["label_int"] == 3] = 2
      #   truth_data[truth_data["label_int"] == 4] = 2
         #    b = truth_data["label"] == "background_low_var"
     #    truth_data.loc[b, "label"] = np.repeat("background", np.count_nonzero(b))
     #    truth_data.loc[b, "label_int"] = np.repeat(1, np.count_nonzero(b))
-     #   truth_data.drop(truth_data[b].index, inplace=True)
+        truth_data.drop(truth_data[b].index, inplace=True)
         truth_data.index = list(range(len(truth_data)))
-        rgb = np.float32([truth_data["red"], truth_data["green"], truth_data["blue"]])
-        nir = truth_data["nir"]
-        truth_data["ratios_blue"] = np.nanmin([truth_data["red_blue_ratio"], truth_data["green_blue_ratio"]])
-        for row_idx in np.random.choice(np.where(truth_data["label"] == label)[0],
-                                        int(np.count_nonzero(truth_data["label"] == "background") * 0.98), replace=False):
-            truth_data.drop(row_idx, inplace=True)
-        truth_data.index = list(range(len(truth_data)))
-        # mask upper reflectance quantile
-    #    if add_background:
-    #        n_labels = len(truth_data[truth_data["label"] != "background"])
-   #         blue_masked = self.variables[2].copy() * self.background_mask
-    #        green_masked = self.variables[1].copy() * self.background_mask
-     #       red_masked = self.variables[0].copy() * self.background_mask
-   #         combined = np.count_nonzero((blue_masked > red_masked) * (blue_masked > green_masked))
-    #        n_pixels = np.count_nonzero(~np.isnan(self.variables[0]))
-            #its_background = np.isnan(self.background_mask)
-            #its_background[its_background > 1] = 1
-   #         its_background = self.high_variance_mask * self.max_mask
-    #        variables_copy = self.variables.copy()
-     #       variables_copy[:, its_background == 1] = np.nan
-          #  reflectances_copy = self.variables[0:4].copy()
-           # reflectances_copy[:, ~its_background] = np.nan  # set nan non-background pixels
-        #    ratios_copy = self.variables[5:7].copy()
-         #   ratios_copy[:, ~its_background] = np.nan
-          #  differences_copy = self.variables[1:3].copy()
-           # differences_copy[:, ~its_background] = np.nan
-        #    truth_data = self._add_background(truth_data, variables_copy, int(n_labels * 0.025))
+     #   for row_idx in np.random.choice(np.where(truth_data["label"] == label)[0],
+      #                                  int(np.count_nonzero(truth_data["label"] == "background") * 0.9), replace=False):
+       #     truth_data.drop(row_idx, inplace=True)
+        #truth_data.index = list(range(len(truth_data)))
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
@@ -486,11 +470,13 @@ class RFTruckDetector:
         #truth_data["reflectance_var"] /= 100
         rgb = np.float32([truth_data["red"], truth_data["green"], truth_data["blue"]])
         variables = [truth_data["reflectance_std"],
-                     truth_data["reflectance_var"],
                      truth_data["red_blue_ratio"],
                      truth_data["green_blue_ratio"],
-                     np.argmax(rgb, 0),
-                     np.argmin(rgb, 0)]
+                     truth_data["red"],
+                     truth_data["green"],
+                     truth_data["blue"]]#,
+                     #np.argmax(rgb, 0),
+                     #np.argmin(rgb, 0)]
         #   truth_data["blue_nir_ratio"]]
         variables = np.float32(variables).swapaxes(0, 1)
         vars_train, vars_test, labels_train, labels_test = train_test_split(variables, list(labels), test_size=0.15)
@@ -499,12 +485,12 @@ class RFTruckDetector:
 
     def _build_variables(self, band_stack):
        # self.background_mask, reflectance_difference_stack = self.expose_anomalous_pixels(band_stack)
-        rgb_std = np.nanstd(band_stack[0:3], 0, dtype=np.float16) ** 2
+        rgb_std = np.nanstd(band_stack[0:3], 0, dtype=np.float16)
         self.high_std_mask = np.int8(rgb_std > np.nanquantile(rgb_std, [0.66]))
         blue_std_quantile = 0.5
-        self.std_mask_blue = np.int8(rgb_std > np.nanquantile(rgb_std, [0.01]))
-        self.std_mask_green = np.int8(rgb_std > np.nanquantile(rgb_std, [blue_std_quantile * 1.35]))
-        self.std_mask_red = np.int8(rgb_std > np.nanquantile(rgb_std, [blue_std_quantile * 1.16]))
+        self.std_mask_blue = np.int8(rgb_std > np.nanquantile(rgb_std, [0.1]))
+        self.std_mask_green = np.int8(rgb_std > np.nanquantile(rgb_std, [0.7]))
+        self.std_mask_red = np.int8(rgb_std > np.nanquantile(rgb_std, [0.8]))
         red_blue_ratio = normalized_ratio(band_stack[0], band_stack[2])
         green_blue_ratio = normalized_ratio(band_stack[1], band_stack[2])
         green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.1]))
@@ -527,11 +513,13 @@ class RFTruckDetector:
  #       variables[1] = band_stack[1] / 255
        # variables[0] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)
         variables[0] = np.nanstd(band_stack[0:3], 0, dtype=np.float16)
-        variables[1] = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
-        variables[2] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
-        variables[3] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
-        variables[4] = np.argmax(band_stack[0:3], 0)
-        variables[5] = np.argmin(band_stack[0:3], 0)
+        variables[1] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
+        variables[2] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        variables[3] = band_stack[0]
+        variables[4] = band_stack[1]
+        variables[5] = band_stack[2]
+     #   variables[3] = np.argmax(band_stack[0:3], 0)
+      #  variables[4] = np.argmin(band_stack[0:3], 0)
         meta = self.meta.copy()
         meta["count"] = variables.shape[0]
         meta["dtype"] = np.float32
