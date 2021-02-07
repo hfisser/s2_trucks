@@ -25,7 +25,7 @@ dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")#
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
@@ -40,7 +40,6 @@ s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_m
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2B_MSIL2A_20200914T095029_N0214_R079_T34UDC_20200914T121343_y0_x0.tif")
 #s2_file = os.path.join(dirs["imgs"], "S2B_MSIL2A_20200327T101629_N0214_R065_T32UNA_20200327T134849_y0_x0.tif")
-#s2_file = "C:\\Users\\Lenovo\\Downloads\\subset1.tif"
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
 
 do_tuning = False
@@ -427,7 +426,7 @@ class RFTruckDetector:
      #   truth_data.drop(truth_data[b].index, inplace=True)
         truth_data.index = list(range(len(truth_data)))
         for row_idx in np.random.choice(np.where(truth_data["label"] == label)[0],
-                                        int(np.count_nonzero(truth_data["label"] == "background") * 0.95), replace=False):
+                                        int(np.count_nonzero(truth_data["label"] == "background") * 0.94), replace=False):
             truth_data.drop(row_idx, inplace=True)
         truth_data.index = list(range(len(truth_data)))
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
@@ -459,17 +458,13 @@ class RFTruckDetector:
   #      self.high_std_mask = np.int8(rgb_var > np.nanquantile(rgb_var, [0.66]))
         blue_std_quantile = 0.5
        # self.std_mask_blue = np.int8(rgb_std > np.nanquantile(rgb_std, [0.1]))
-        self.var_mask_green = np.int8(rgb_var > np.nanquantile(rgb_var, [0.8]))
-        self.var_mask_red = np.int8(rgb_var > np.nanquantile(rgb_var, [0.8]))
+        self.var_mask_green = np.int8(rgb_var > np.nanquantile(rgb_var, [0.75]))
+        self.var_mask_red = np.int8(rgb_var > np.nanquantile(rgb_var, [0.75]))
         red_blue_ratio = normalized_ratio(band_stack[0], band_stack[2])
         green_blue_ratio = normalized_ratio(band_stack[1], band_stack[2])
-        green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.1]))
-        red_blue_mask = np.int8(red_blue_ratio < np.nanquantile(red_blue_ratio, [0.1]))
+        green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.2]))
+        red_blue_mask = np.int8(red_blue_ratio < np.nanquantile(red_blue_ratio, [0.2]))
         self.blue_ratio_mask = green_blue_mask * red_blue_mask
-    #    self.high_reflectance_mask = np.ones_like(band_stack[0])
-      #  self.high_reflectance_mask *= np.int8(band_stack[0] < np.nanquantile(band_stack[0], [0.99]))
-       # self.high_reflectance_mask *= np.int8(band_stack[1] < np.nanquantile(band_stack[1], [0.99]))
-        #self.high_reflectance_mask *= np.int8(band_stack[2] < np.nanquantile(band_stack[2], [0.99]))
         self.low_reflectance_mask = np.zeros_like(band_stack[0])
         self.low_reflectance_mask += np.int8(band_stack[0] > np.nanquantile(band_stack[0], [0.25]))
         self.low_reflectance_mask += np.int8(band_stack[1] > np.nanquantile(band_stack[1], [0.25]))
