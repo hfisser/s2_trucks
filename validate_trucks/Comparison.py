@@ -44,8 +44,6 @@ process_dates = ["10-04-2018",
                  "19-09-2018",
                  "12-10-2018"]
 
-process_dates = [process_dates[0]]
-
 
 class Comparison:
     def __init__(self, dates, aoi_file):
@@ -70,7 +68,7 @@ class Comparison:
             prediction_boxes = rf_td.extract_objects(prediction_array)
             detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
             rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-            tiles_files = self.compare(detections_file, dir_comparison_s5p)
+            self.compare(detections_file, dir_comparison_s5p)
             
     @staticmethod
     def compare(detections_file, raster_directory):
@@ -116,12 +114,12 @@ class Comparison:
         comparison_name = {"OUT_S5P": "S5P", "OUT_Insitu": "Insitu"}[folder]
         regression = linregress(s2_array_flat, comparison_array_flat)
         slope, intercept = regression.slope, regression.intercept
-        plt.xlabel = "s2_trucks"
-        plt.ylabel = comparison_name
-        plt.title = "S2 trucks vs. " + comparison_name
-        plt.plot(s2_array_flat, slope * x + intercept)
-        plt.text(10, 0, "r2: %s\nslope: %s" % (str(slope), str(intercept)))
-        plt.savefig(os.path.join(dir_comparison_plots, detections_basename, "_vs%s.png" % comparison_name))
+        plot.xlabel = "s2_trucks"
+        plot.ylabel = comparison_name
+        plot.title = "S2 trucks vs. " + comparison_name
+        plot.plot(s2_array_flat, slope * x + intercept)
+        plot.text(10, 0, "r2: %s\nslope: %s" % (str(slope), str(intercept)))
+        plot.savefig(os.path.join(dir_comparison_plots, detections_basename, "_vs%s.png" % comparison_name))
 
 
 if __name__ == "__main__":
