@@ -1,21 +1,15 @@
 import os
-import time
 import requests
 import shutil
 import numpy as np
 import rasterio as rio
 import geopandas as gpd
 import pandas as pd
-import xarray as xr
 from glob import glob
-from shutil import copyfile
 from shapely.geometry import Point, box
-from shapely.geometry.linestring import LineString
 from fiona.errors import DriverError
-from rasterio.merge import merge
 
-from osm_utils.utils import get_roads, rasterize_osm
-from array_utils.points import raster_to_points
+from osm_utils.utils import get_roads
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
@@ -39,10 +33,11 @@ NAME_HOUR = "Stunde"
 NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
-OSM_BUFFER = 25
-hour, minutes, year = 11, 20, 2018
+OSM_BUFFER = 30
+hour, minutes, year = 10, 10, 2018
 
 validate = "boxes"
+validate = "bast"
 
 stations = dict()
 stations_pd = pd.read_csv(os.path.join(os.path.dirname(aois_file), "validation_stations.csv"), sep=";")
@@ -83,7 +78,8 @@ class Validator:
         self.date = period[0]
         band_names, resolution, folder = ["B04", "B03", "B02", "B08", "CLM"], 10, ""
         dir_save_archive = os.path.join(self.dirs["s2"], "archive")
-        for directory in glob(os.path.join(os.path.dirname(dir_save_archive), "*")):  # keep this clean, only archive should be retained
+        # keep this clean, only archive should be retained
+        for directory in glob(os.path.join(os.path.dirname(dir_save_archive), "*")):
             if directory != dir_save_archive:
                 shutil.rmtree(directory)
         if not os.path.exists(dir_save_archive):
@@ -91,60 +87,18 @@ class Validator:
         sh = SentinelHub()
         sh.set_credentials(SH_CREDENTIALS_FILE)
         sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])  # diff. order
-        splitted_boxes = sh.split_box(sh_bbox, resolution)  # bbox may be too large, hence split (if too large)
-        lats, lons = [], []
-        files = []
         merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (self.station_name_clear,
                                                                                         period[0],
                                                                                         period[1]))
-        for i, bbox in enumerate(splitted_boxes):
-            curr_s2_data_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_box%s.tiff" % (self.station_name_clear,
-                                                                                                 period[0],
-                                                                                                 period[1], i))
-            files.append(curr_s2_data_file)
-            if not os.path.exists(merged_file) and not os.path.exists(curr_s2_data_file):
-                band_stack, dir_data = sh.get_data(bbox, period, DataCollection.SENTINEL2_L2A, band_names,
-                                                   resolution, self.dirs["s2"])
-                folders = glob(os.path.join(dir_data, "*"))
-                folders.remove(dir_save_archive)
-                if len(folders) > 1:
-                    print("Several files, don't know which to read from %s" % self.dirs["s2"])
-                    raise FileNotFoundError
-                else:
-                    folder = folders[0]
-                    reflectance_file = copyfile(glob(os.path.join(folder, "*.tiff"))[0], curr_s2_data_file)
-                    if os.path.exists(folder) and os.path.exists(curr_s2_data_file):
-                        shutil.rmtree(folder)  # remove original download file
-                    else:
-                        time.sleep(10)
-                        shutil.rmtree(folder)
-        if not os.path.exists(merged_file):
-            with rio.open(files[0], "r") as src:
-                meta = src.meta  # get meta
-            merged_stack, transform = merge(files)
-            meta = dict(transform=transform, height=merged_stack.shape[1], width=merged_stack.shape[2],
-                        count=merged_stack.shape[0], driver="GTiff", dtype=merged_stack.dtype,
-                        crs=meta["crs"])
-            with rio.open(merged_file, "w", **meta) as tgt:
-                for i in range(merged_stack.shape[0]):
-                    tgt.write(merged_stack[i], i+1)
+        band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
+                                         ["B08", "B04", "B03", "B02", "CLM"], resolution, self.dirs["s2"],
+                                         merged_file)
         detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
                                        (self.date, self.station_name_clear))
-        try:
-            with rio.open(merged_file, "r") as src:
-                meta = src.meta
-                band_stack_np = np.zeros((meta["height"], meta["width"], meta["count"]))
-                for b in range(band_stack_np.shape[2]):
-                    band_stack_np[:, :, b] = src.read(b + 1)
-        except rio.errors.RasterioIOError as e:
-            raise e
-        band_stack_np = band_stack_np.swapaxes(0, 2).swapaxes(1, 2)  # z, y, x
         detector = RFTruckDetector()
         band_stack = detector.read_bands(merged_file)
-        # transform to EPSG:4326
-        t, epsg_4326 = meta["transform"], "EPSG:4326"
-        bands_preprocessed = detector.preprocess_bands(band_stack, dir_osm)
-        detector.train(bands_preprocessed, truth_csv)
+        detector.preprocess_bands(band_stack)
+        detector.train()
         prediction = detector.predict()
         prediction_boxes = detector.extract_objects(prediction)
         try:
@@ -157,18 +111,18 @@ class Validator:
         self.station_file = os.path.join(self.dirs["station_counts"], station_folder, station_folder + "_%s.csv" %
                                          str(year))
         self.detections_file = detections_file
-        lats.append(lat_from_meta(meta))
-        lons.append(lon_from_meta(meta))
+        with rio.open(merged_file, "r") as src:
+            meta = src.meta
+        self.lat = lat_from_meta(meta)
+        self.lon = lon_from_meta(meta)
         detector, band_stack_np = None, None
-        self.lat = np.sort(np.unique(lats))[::-1]
-        self.lon = np.sort(np.unique(lons))
 
     def validate_with_bast(self):
         try:
             validation_pd = pd.read_csv(self.validation_file)
         except FileNotFoundError:
             validation_pd = pd.DataFrame()
-        speed = 90
+        speed = 80
         try:
             self.detections = gpd.read_file(self.detections_file)
         except DriverError:
@@ -244,8 +198,8 @@ class Validator:
             # detect on whole array
             rf_td = RFTruckDetector()
             band_data = rf_td.read_bands(img_file)
-            band_data_preprocessed = rf_td.preprocess_bands(band_data, dir_osm)
-            rf_td.train(band_data_preprocessed, truth_csv)
+            rf_td.preprocess_bands(band_data)
+            rf_td.train()
             prediction_array = rf_td.predict()
             prediction_boxes = rf_td.extract_objects(prediction_array)
             name = os.path.basename(img_file).split(".tif")[0]
