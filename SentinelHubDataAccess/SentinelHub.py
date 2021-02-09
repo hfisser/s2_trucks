@@ -27,6 +27,8 @@ class SentinelHub:
             self.sh_config.sh_client_secret = content.split("SH_CLIENT_SECRET = ")[1].split("\n")[0]
 
     def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None, merged_file=None):
+        if len(period[0].split("-")[0]) == 2:
+            period = ["-".join([date[-4:], date[3:5], date[0:2]]) for date in period]
         if merged_file is not None and os.path.exists(merged_file):
             with rio.open(merged_file, "r") as src:
                 data = np.zeros((src.count, src.height, src.width))
@@ -34,8 +36,9 @@ class SentinelHub:
                     data[band_idx] = src.read(band_idx + 1)
             return data, os.path.dirname(merged_file)
         else:
-            if len(self.split_box(bbox, resolution)) > 1:
-                return self.get_data_large_aoi(bbox, period, dataset, bands, resolution, dir_save, merged_file)
+            splitted_box = self.split_box(bbox, resolution)
+            if len(splitted_box) > 1:
+                return self.get_data_large_aoi(splitted_box, period, dataset, bands, resolution, dir_save, merged_file)
             else:
                 sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
                 request = sh_request_builder.request(self.sh_config, dir_save)
@@ -43,11 +46,10 @@ class SentinelHub:
                 print("Retrieved data of shape: %s" % str(data[0].shape))
                 return data, request.data_folder
 
-    def get_data_large_aoi(self, bbox, period, dataset, bands, resolution, dir_save, merged_file):
-        splitted_boxes = self.split_box(bbox, resolution)
+    def get_data_large_aoi(self, splitted_box, period, dataset, bands, resolution, dir_save, merged_file):
         dir_save_tmp = os.path.join(dir_save, "tmp")
         files = []
-        for i, bbox in enumerate(splitted_boxes):
+        for i, bbox in enumerate(splitted_box):
             if not os.path.exists(dir_save_tmp):
                 os.mkdir(dir_save_tmp)
             curr_s2_data_file = os.path.join(dir_save_tmp, "s2_date%s_%s_bbox%s.tiff" % (period[0], period[1], i))
@@ -82,10 +84,11 @@ class SentinelHub:
                     crs=meta["crs"])
         with rio.open(merged_file, "w", **meta) as tgt:
             for i in range(merged_stack.shape[0]):
-                tgt.write(merged_stack[i], i+1)
-        for file in files:  # delete the sub aoi files
-            os.remove(file)
-        shutil.rmtree(dir_save_tmp)
+                tgt.write(merged_stack[i], i + 1)
+        if os.path.exists(merged_file):
+            for file in files:  # delete the sub aoi files
+                os.remove(file)
+            shutil.rmtree(dir_save_tmp)
         return merged_stack, os.path.dirname(merged_file)
 
     @staticmethod
