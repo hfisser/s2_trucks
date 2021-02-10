@@ -34,7 +34,7 @@ NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
 OSM_BUFFER = 30
-hour, minutes, year = 10, 20, 2018
+hour, minutes, year = 10, 15, 2018
 
 validate = "boxes"
 validate = "bast"
@@ -137,9 +137,8 @@ class Validator:
         station_buffer = station_point.buffer(buffer_distance)
         if "Braunschweig-Flughafen" in self.station_name:  # rectangluar buffer due to another highway within buffer
             sy, sx = station_point.y, station_point.x
-            station_buffer = box(sx - buffer_distance, sy - 1000, sx + buffer_distance, sy + 3000)
+            station_buffer = box(sx - buffer_distance, sy - 1500, sx + buffer_distance, sy + 3000)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer], crs=self.detections.crs)
-
         detections_in_buffer = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
         b = np.float32([station_point.x, station_point.y])
         s2_direction1, s2_direction2 = 0, 0
