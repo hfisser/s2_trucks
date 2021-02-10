@@ -34,7 +34,7 @@ NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
 OSM_BUFFER = 30
-hour, minutes, year = 10, 10, 2018
+hour, minutes, year = 10, 20, 2018
 
 validate = "boxes"
 validate = "bast"
@@ -133,12 +133,39 @@ class Validator:
         distance_traveled = hour_proportion * speed
         station_counts = pd.read_csv(self.station_file, sep=";")
         station_point = Point([self.station_meta["x"], self.station_meta["y"]])
-        station_buffer = station_point.buffer(distance_traveled * 1000)
+        buffer_distance = distance_traveled * 1000
+        station_buffer = station_point.buffer(buffer_distance)
+        if "Braunschweig-Flughafen" in self.station_name:  # rectangluar buffer due to another highway within buffer
+            sy, sx = station_point.y, station_point.x
+            station_buffer = box(sx - buffer_distance, sy - 1000, sx + buffer_distance, sy + 3000)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer], crs=self.detections.crs)
-        try:
-            detections_in_reach = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
-        except AttributeError:  # no detections in reach
-            detections_in_reach = gpd.GeoDataFrame()
+
+        detections_in_buffer = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
+        b = np.float32([station_point.x, station_point.y])
+        s2_direction1, s2_direction2 = 0, 0
+        for row in detections_in_buffer.iterrows():
+            detection_point = row[1].geometry.centroid
+            a = np.float32([detection_point.x, detection_point.y])
+            station_direction, heading = self.calc_vector_direction_in_degree(a - b), row[1].direction_degree
+            # abs. difference between calculated heading and station direction must be < 90 (heading away from station)
+            # this only works when the road is relatively balanced like highways, not many curves
+            match = np.abs(station_direction - heading) < 90  # first try this
+            if match:
+                pass
+            else:
+                smaller_180 = [station_direction <= 180, heading <= 180]  # avoid degree edge 360 -> 1
+                station_direction = station_direction + 360 if smaller_180[0] else station_direction
+                heading = heading + 360 if smaller_180[1] else heading
+                match = np.abs(station_direction - heading) < 90
+            heading = row[1].direction_degree
+            if match and heading >= 180:
+                s2_direction1 += 1
+            elif match and heading < 180:
+                s2_direction2 += 1
+#        try:
+ #           detections_in_reach = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
+  #      except AttributeError:  # no detections in reach
+   #         detections_in_reach = gpd.GeoDataFrame()
         # compare number of detections in reach to the one of count station
         date_station_format = self.date[2:].replace("-", "")  # e.g. "2018-12-31" -> "181231"
         time_match = (station_counts["Datum"] == int(date_station_format)) * (station_counts["Stunde"] == hour)
@@ -146,7 +173,8 @@ class Validator:
         idx = len(validation_pd)
         for key, value in {"station_file": self.station_file, "s2_counts_file": self.s2_data_file,
                            "detections_file": self.detections_file,
-                           "hour": hour, "n_minutes": minutes, "s2_counts": len(detections_in_reach) / 2}.items():
+                           "hour": hour, "n_minutes": minutes,
+                           "s2_direction1": s2_direction1, "s2_direction2": s2_direction2}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
             # add counts proportional to number of minutes
