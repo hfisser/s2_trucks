@@ -17,7 +17,7 @@ SH_CREDENTIALS_FILE = os.path.join("F:" + os.sep + "sh", "sh.txt")
 
 resolution = 10
 
-bast_station = "Scheppau (3423)"
+bast_station = "Braunschweig-Flughafen (3429)"
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_comparison = os.path.join(dir_main, "comparison")
@@ -30,7 +30,7 @@ dir_validation_data = os.path.join(dir_validation, "data", "s2", "archive")
 dir_comparison_s5p = os.path.join(dir_comparison, "OUT_S5P")
 dir_validation = os.path.join(dir_main, "validation")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
-aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
+aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
 
 for directory in [dir_comparison_detections, dir_comparison_detections_boxes, dir_comparison_detections_rasters,
                   dir_comparison_plots]:
@@ -153,8 +153,7 @@ class Comparison:
                                  comparison_name))
         plt.close()
 
-    @staticmethod
-    def plot_s2_series():
+    def plot_s2_series(self):
         weekdays = ["Tuesday", "Friday", "Monday", "Sunday", "Tuesday", "Wednesday", "Monday", "Tuesday",
                     "Friday", "Thursday", "Wednesday", "Friday"]
         detection_files = glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg"))
@@ -163,36 +162,65 @@ class Comparison:
             split = detection_file.split("_")
             dates.append("-".join([split[-2], split[-3], split[-4]]) + " (%s)" % weekday)
             n_detections.append(len(gpd.read_file(detection_file)))
-        for date, n, weekday in zip(dates, n_detections, weekdays):
-            color = "#269b99" if weekday in ["Saturday", "Sunday"] else "#7b0c7c"
-            plt.plot_date(date, n, xdate=True, color=color, alpha=0.8)
+        plt.plot_date(dates, n_detections, xdate=True, color="#7b0c7c", alpha=0.8)
         plt.ylabel("Detected trucks")
         plt.title("Number of detected trucks Sentinel-2")
         plt.xticks(rotation=90)
         plt.subplots_adjust(bottom=0.4)
-        plt.axes().xaxis.set_tick_params(labelsize='small')
+        plt.axes().xaxis.set_tick_params(labelsize=8)
+        plt.axes().yaxis.set_tick_params(labelsize=8)
         plt.savefig(os.path.join(dir_comparison_plots, "s2_detections_series.png"))
+        plt.close()
+        self.compare_station_counts(detection_files, dates)  # call here because we have the files and dates
 
     @staticmethod
     def compare_station_counts(detection_files, dates):
         # compare the processed dates with BAST station data
-        validator = Validator(bast_station, aois_file, dir_validation, dir_osm)
+        validator = Validator(bast_station, aoi_file, dir_validation, dir_osm)
         station_folder = "zst" + validator.station_name.split("(")[1].split(")")[0]
         wrong = len(station_folder) == 4
         station_folder = "zst" + validator.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
         validator.station_file = os.path.join(validator.dirs["station_counts"], station_folder, station_folder +
                                               "_2018.csv")
         validator.validation_file = os.path.join(dir_validation, "series_comparison.csv")  # not default validation file
+        try:
+            os.remove(validator.validation_file)  # nothing should be added to existing file, hence delete
+        except FileNotFoundError:
+            pass
         for detection_file, date in zip(detection_files, dates):
-            validator.date = date
+            validator.date = date.split(" (")[0]
             validator.detections_file = detection_file
             validator.validate_with_bast()
         comparison_pd = pd.read_csv(validator.validation_file)
+        station_counts = [np.float32(comparison_pd[column]) for column in ["Lzg_R1", "Lzg_R2"]]
+        s2_counts = [np.float32(comparison_pd[column]) for column in ["s2_direction1", "s2_direction2"]]
+        s2_colors, bast_colors = ["#e692ea", "#82068c"], ["#c6eb5a", "#8fb22a"]
+        plt.figure(figsize=[10, 8])
+        for s2_count_direction, s2_color in zip(s2_counts, s2_colors):
+            plt.plot_date(dates, s2_count_direction, xdate=True, color=s2_color, alpha=0.5, ms=5)
+            plt.plot(dates, s2_count_direction, color=s2_color)
+        for bast_count_direction, bast_color in zip(station_counts, bast_colors):
+            plt.plot_date(dates, bast_count_direction, xdate=True, color=bast_color, alpha=0.5, ms=5)
+            plt.plot(dates, bast_count_direction, color=bast_color)
+        plt.ylabel("Count")
+        plt.xticks(rotation=90)
+        plt.subplots_adjust(bottom=0.2)
+        s2_direction, bast_direction = "S2 direction ", "BAST Lzg direction "
+        excl = "_"
+        plt.legend([excl, s2_direction + "1", excl, s2_direction + "2", excl, bast_direction + "1", excl,
+                    bast_direction + "2", excl], fontsize=8)
+        plt.title("Trucks Sentinel-2 & BAST station Braunschweig-Flughafen", fontsize=12)
+        plt.axes().xaxis.set_tick_params(labelsize=8)
+        plt.axes().yaxis.set_tick_params(labelsize=8)
+        plt.savefig(os.path.join(dir_comparison_plots, "s2_hannover_braunschweig_station_comparison_series.png"),
+                    dpi=150)
+        plt.close()
 
 
 if __name__ == "__main__":
     if not os.path.exists(dir_comparison_detections):
         os.mkdir(dir_comparison_detections)
     comparison = Comparison(process_dates, aoi_file_path)
-    #comparison.run_comparison()
+  #  comparison.run_comparison()
     comparison.plot_s2_series()
+    print("Done")
