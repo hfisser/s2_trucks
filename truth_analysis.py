@@ -76,6 +76,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
  #   # extract stats from training boxes
 #    boxes_training.index = range(len(boxes_training))
     boxes_training = boxes_gpd
+    means_arr = [np.nanmean(arr[band_idx]) for band_idx in [0, 1, 2, 3]]
     for i in np.random.choice(list(range(len(boxes_training))), n_retain, replace=False):
         box = boxes_training.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
@@ -83,7 +84,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
    #     sub_diffs = reflectance_difference_stack[:, y0:y1 + 1, x0:x1 + 1].copy()
-        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios)
+        spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, means_arr)
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
     print("Number of training boxes: %s" % n_retain)
@@ -98,7 +99,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
     #        spectra_ml.drop(row, inplace=True)
     #    spectra_ml.index = range(len(spectra_ml))
-    spectra_ml = add_background(spectra_ml, arr, ratios, n_retain * 3)
+    spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, n_retain)
     spectra_ml.to_csv(spectra_ml_csv)
 
 
@@ -191,7 +192,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(training_spectra_pd, sub_reflectances, sub_ratios):
+def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means_full_arr):
     ndvi = normalized_ratio(sub_reflectances[3], sub_reflectances[0])
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
@@ -207,46 +208,48 @@ def extract_rgb_spectra(training_spectra_pd, sub_reflectances, sub_ratios):
         blue_criteria = sub_copy[2] + sub_ratios_copy[2]
         blue_y, blue_x = np.where(blue_criteria == np.nanmax(blue_criteria))
     except IndexError:
-        return training_spectra_pd
+        return t
     if len(red_y) == 0 or len(green_y) == 0 or len(blue_y) == 0:
-        return training_spectra_pd
+        return t
     for label, label_int, y, x in zip(("red", "green", "blue"),
                                       (4, 3, 2),
                                       [red_y, green_y, blue_y],
                                       [red_x, green_x, blue_x]):
-        row_idx = len(training_spectra_pd)
+        row_idx = len(t)
         y, x = y[0], x[0]
-        rgb = sub_reflectances[0:3, y, x]
-        training_spectra_pd.loc[row_idx, "label"] = label
-        training_spectra_pd.loc[row_idx, "label_int"] = label_int
-        training_spectra_pd.loc[row_idx, "red"] = rgb[0]
-        training_spectra_pd.loc[row_idx, "green"] = rgb[1]
-        training_spectra_pd.loc[row_idx, "blue"] = rgb[2]
-        training_spectra_pd.loc[row_idx, "nir"] = sub_reflectances[3, y, x]
-        training_spectra_pd.loc[row_idx, "ndvi"] = ndvi[y, x]
-        training_spectra_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
-        training_spectra_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
-        training_spectra_pd.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
-        training_spectra_pd.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
-        training_spectra_pd.loc[row_idx, "red_difference"] = normalized_ratio(rgb[0], np.nanmean(rgb[0]))
-        training_spectra_pd.loc[row_idx, "green_difference"] = normalized_ratio(rgb[1], np.nanmean(rgb[1]))
-        training_spectra_pd.loc[row_idx, "blue_difference"] = normalized_ratio(rgb[2], np.nanmean(rgb[2]))
-    return training_spectra_pd
+        stack_normalized = sub_reflectances[0:4, y, x] / means_full_arr
+        t.loc[row_idx, "label"] = label
+        t.loc[row_idx, "label_int"] = label_int
+        t.loc[row_idx, "red"] = stack_normalized[0]
+        t.loc[row_idx, "green"] = stack_normalized[1]
+        t.loc[row_idx, "blue"] = stack_normalized[2]
+        t.loc[row_idx, "nir"] = stack_normalized[3]
+        t.loc[row_idx, "ndvi"] = ndvi[y, x]
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized, 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized, 0)
+        t.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
+        t.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
+        t.loc[row_idx, "red_normalized"] = stack_normalized[0]
+        t.loc[row_idx, "green_normalized"] = stack_normalized[1]
+        t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
+        t.loc[row_idx, "nir_normalized"] = stack_normalized[3]
+    return t
 
 
-def add_background(out_pd, reflectances, ratios, n_background):
+def add_background(out_pd, reflectances, ratios, means, n_background):
     ndvi = normalized_ratio(reflectances[3], reflectances[0])
-    var = np.nanvar(reflectances[0:3], 0)
-    masks = [np.int8(ndvi >= 0.6), np.int8(var < np.nanquantile(var, [0.5]))]
-#    for mask, label_int, label in zip(masks, [11, 12], ["background_high_ndvi", "background_low_var"]):
+    #var = np.nanvar(reflectances[0:3], 0)
     label_int, label = 1, "background"
     not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
     not_nan_ratios = np.int8(~np.isnan(ratios))
     not_nan_y, not_nan_x = np.where((np.min(not_nan_reflectances, 0) * np.min(not_nan_ratios, 0)) == 1)
     random_indices = np.random.randint(0, len(not_nan_y), np.clip(n_background, 0, len(not_nan_y)))
+    reflectances_normalized = np.zeros_like(reflectances)
+    for band_idx, mean_value in zip(range(reflectances.shape[0]), means):
+        reflectances_normalized[band_idx] = reflectances[band_idx].copy() / mean_value
     for random_idx in zip(random_indices):
         y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
-        rgb = reflectances[0:3, y_arr_idx, x_arr_idx]
+        stack = reflectances_normalized[:, y_arr_idx, x_arr_idx]
         row_idx = len(out_pd)
         out_pd.loc[row_idx, "label_int"] = label_int
         out_pd.loc[row_idx, "label"] = label
@@ -255,13 +258,14 @@ def add_background(out_pd, reflectances, ratios, n_background):
         out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
         out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(rgb, 0)
-        out_pd.loc[row_idx, "reflectance_var"] = np.nanvar(rgb, 0)
-        out_pd.loc[row_idx, "red_blue_ratio"] = ratios[0, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "green_blue_ratio"] = ratios[3, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "red_difference"] = rgb[0] - np.nanmean(rgb[0])
-        out_pd.loc[row_idx, "green_difference"] = rgb[1] - np.nanmean(rgb[1])
-        out_pd.loc[row_idx, "blue_difference"] = rgb[2] - np.nanmean(rgb[2])
+        out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(stack[0:3], 0)
+        out_pd.loc[row_idx, "reflectance_var"] = np.nanvar(stack[0:3], 0)
+        out_pd.loc[row_idx, "red_normalized"] = stack[0]
+        out_pd.loc[row_idx, "green_normalized"] = stack[1]
+        out_pd.loc[row_idx, "blue_normalized"] = stack[2]
+        out_pd.loc[row_idx, "nir_normalized"] = stack[3]
+        out_pd.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
+        out_pd.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
     return out_pd
 
 
