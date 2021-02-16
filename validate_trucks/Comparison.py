@@ -154,14 +154,20 @@ class Comparison:
         plt.close()
 
     def plot_s2_series(self):
-        weekdays = ["Tuesday", "Friday", "Monday", "Sunday", "Tuesday", "Wednesday", "Monday", "Tuesday",
-                    "Friday", "Thursday", "Wednesday", "Friday"]
+        weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
+                    "2018-07-24": "Tuesday", "2018-08-03": "Friday", "2018-08-23": "Thursday",
+                    "2018-09-19": "Wednesday", "2018-10-12": "Friday", "2018-04-10": "Tuesday",
+                    "2018-04-20": "Friday", "2018-05-07": "Monday", "2018-05-20": "Sunday"}
         detection_files = glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg"))
         dates, n_detections = [], []
-        for detection_file, weekday in zip(detection_files, weekdays):
-            split = detection_file.split("_")
-            dates.append("-".join([split[-2], split[-3], split[-4]]) + " (%s)" % weekday)
+        for detection_file in detection_files:
+            str_split = detection_file.split("_")
+            date = "-".join([str_split[-2], str_split[-3], str_split[-4]])
+            dates.append(date)
             n_detections.append(len(gpd.read_file(detection_file)))
+        date_sort = np.argsort(dates)
+        dates, n_detections = np.array(dates)[date_sort], np.int16(n_detections)[date_sort]
+        dates = [date + " (%s)" % weekdays[date] for date in dates]
         plt.plot_date(dates, n_detections, xdate=True, color="#7b0c7c", alpha=0.8)
         plt.ylabel("Detected trucks")
         plt.title("Number of detected trucks Sentinel-2")
@@ -171,7 +177,7 @@ class Comparison:
         plt.axes().yaxis.set_tick_params(labelsize=8)
         plt.savefig(os.path.join(dir_comparison_plots, "s2_detections_series.png"))
         plt.close()
-        self.compare_station_counts(detection_files, dates)  # call here because we have the files and dates
+        self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
     @staticmethod
     def compare_station_counts(detection_files, dates):
@@ -221,6 +227,6 @@ if __name__ == "__main__":
     if not os.path.exists(dir_comparison_detections):
         os.mkdir(dir_comparison_detections)
     comparison = Comparison(process_dates, aoi_file_path)
-  #  comparison.run_comparison()
+    comparison.run_comparison()
     comparison.plot_s2_series()
     print("Done")
