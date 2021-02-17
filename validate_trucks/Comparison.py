@@ -5,7 +5,7 @@ import pandas as pd
 import xarray as xr
 import rasterio as rio
 import matplotlib.pyplot as plt
-
+from shapely.geometry import Point
 from validate_trucks.TruckValidator import Validator
 from glob import glob
 from scipy.stats import linregress
@@ -28,6 +28,7 @@ dir_comparison_plots = os.path.join(dir_comparison, "plots")
 dir_validation = os.path.join(dir_main, "validation")
 dir_validation_data = os.path.join(dir_validation, "data", "s2", "archive")
 dir_comparison_s5p = os.path.join(dir_comparison, "OUT_S5P")
+dir_comparison_insitu = os.path.join(dir_comparison, "OUT_Insitu")
 dir_validation = os.path.join(dir_main, "validation")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
@@ -37,7 +38,12 @@ for directory in [dir_comparison_detections, dir_comparison_detections_boxes, di
     if not os.path.exists(directory):
         os.mkdir(directory)
 
-aoi_file_path = os.path.join(dir_comparison, "aoi_h_bs.geojson")
+aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
+uba_stations_locations_file = os.path.join(dir_comparison_insitu, "station_locations.csv")
+uba_dates = "20180410,20180420,20180507,20180520,20180522,20180606,20180611,20180724,20180726,20180803,20180823," \
+            "20180919,20181012,20181014".split(",")
+
+
 process_dates = ["10-04-2018",
                  "20-04-2018",
                  "07-05-2018",
@@ -50,7 +56,9 @@ process_dates = ["10-04-2018",
                  "23-08-2018",
                  "19-09-2018",
                  "12-10-2018"]
-comparison_variable = "var_mod_NO2_AK_coulumn"
+comparison_variables = ["var_mod_NO2_AK_coulumn"]
+lon_crop = 10.6695
+uba_station_buffer = 10000  # meters
 
 
 class Comparison:
@@ -84,17 +92,67 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-            file_prefix = {"var_mod_NO2_AK_coulumn": "test_tropomi_NO2_"}[comparison_variable]
-            split = file_str.split("_")
-            d, m, y = split[-3], split[-2], split[-1]
-            try:
-                comparison_raster_file = glob(os.path.join(dir_comparison_s5p, file_prefix + "%s%s%s*.nc" % (y, m, d)))[0]
-            except IndexError:
-                continue
-            self.compare(detections_file, comparison_raster_file, comparison_variable)
+            for comparison_variable in comparison_variables:
+                file_prefix = {"var_mod_NO2_AK_coulumn": "test_tropomi_NO2_"}[comparison_variable]
+                dir_target = [dir_comparison_s5p][int("NO2" not in file_prefix)]
+                split = file_str.split("_")
+                d, m, y = split[-3], split[-2], split[-1]
+                try:
+                    comparison_raster_file = glob(os.path.join(dir_target, file_prefix + "%s%s%s*.nc" % (y, m, d)))[0]
+                except IndexError:
+                    continue
+                self.compare_s5p_no2(detections_file, comparison_raster_file, comparison_variable, "-".join([y, m, d]))
 
     @staticmethod
-    def compare(detections_file, raster_file, raster_variable_name):
+    def compare_insitu_no2(detection_files):
+        crs = gpd.read_file(detection_files[0]).crs
+        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
+        values = np.zeros((len(uba_station_locations_pd), 2, len(detection_files)))
+        for row_idx in range(len(uba_station_locations_pd)):
+            row = uba_station_locations_pd.iloc[row_idx]
+            station_name = row.name
+            station_point_gpd = gpd.GeoDataFrame({"id": [0], "geometry": [Point([row.lat, row.lon])]}, crs="EPSG:4326")
+            station_point_gpd_utm = station_point_gpd.to_crs(crs)
+            station_buffer = station_point_gpd_utm.buffer(uba_station_buffer)
+            station_file = os.path.join(dir_comparison_insitu, "_".join([station_name, "NO2", "year", "2018", ".nc"]))
+            station_data = xr.open_dataset(station_file)
+            station_obs = station_data.obs.values
+            dates = []
+            for idx, detection_file in enumerate(detection_files):
+                detections = gpd.read_file(detection_file)
+                detections_basename = os.path.basename(detection_file)
+                file_split = detection_file.split("_")
+                date = file_split[-2] + file_split[-3] + file_split[-4]
+                dates.append(date)
+                date_idx = np.where(np.array(uba_dates) == date)[0][0]
+                no2_of_hour = station_obs[date_idx * 24 + 10]   # hour 10 of day of interest in flat variable
+                values[row_idx, 0, idx] = no2_of_hour
+                values[row_idx, 1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
+            values[np.isnan(values)] = 0
+            y, x = values[row_idx][1], values[row_idx][0]
+            y[x == 0] = 0
+            x[y == 0] = 0
+            regress = linregress(x, y)
+            try:
+                m, b = np.polyfit(x, y, 1)
+            except np.linalg.LinAlgError:  # only zeros (nans)
+                continue
+            plt.plot(x, m * x + b, color="#2b2b2b")
+            plt.scatter(x, y, color="#c404ab")
+            plt.ylabel("S2 trucks")
+            plt.xlabel("UBA station NO2 (10-11 AM)")
+            plt.title("UBA station %s" % station_name, fontsize=12)
+            plt.axes().xaxis.set_tick_params(labelsize=8)
+            plt.axes().yaxis.set_tick_params(labelsize=8)
+            plt.text(np.nanquantile(x, [0.025])[0],
+                     np.nanquantile(y, [0.95])[0], "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
+                                                                             np.round(regress.slope, 2)),
+                     fontsize=8)
+            plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=150)
+            plt.close()
+
+    @staticmethod
+    def compare_s5p_no2(detections_file, raster_file, raster_variable_name, date):
         """
         reads detections and raster tiles, number of detections in each cell is compared with n detections
         :param detections_file: str file path to detections
@@ -108,10 +166,13 @@ class Comparison:
         detections = detections.to_crs("EPSG:4326")  # because rasters are given as 4326
         reference_array = xr.open_dataset(raster_file)
         lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
+        diff_lon_crop_lon = np.abs(lon - lon_crop)
+        crop_idx = np.where(diff_lon_crop_lon == np.min(diff_lon_crop_lon))[0][0] + 1
+        lon = lon[crop_idx:]  # crop lon
         lat_resolution = np.mean(lat[1:] - lat[0:-1])
         lon_resolution = np.mean(lon[1:] - lon[0:-1])
         box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
-        comparison_array = reference_array[raster_variable_name].values
+        comparison_array = reference_array[raster_variable_name].values[:, crop_idx:]
         s2_trucks_array = np.zeros_like(comparison_array)
         # iterate over cells and count number of s2 trucks
         for y in range(s2_trucks_array.shape[0]):
@@ -129,7 +190,7 @@ class Comparison:
                                                 crs=detections.crs)  # raster cell as box, count boxes within
                 s2_trucks_array[y, x] = len(gpd.clip(detections, cell_box_gpd))  # number of detections in cell
         detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + box_str +
-                                              ".tiff")
+                                              "reference%s.tiff" % raster_variable_name)
         # trucks raster to gtiff
         meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
                     width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
@@ -139,17 +200,15 @@ class Comparison:
             tgt.write(s2_trucks_array, 1)
         # plot detections vs. comparison array
         s2_array_flat, comparison_array_flat = s2_trucks_array.flatten(), comparison_array.flatten()
-        plt.scatter(s2_array_flat, comparison_array_flat)  # xy of flat arrays
+        comparison_array_flat = comparison_array_flat[s2_array_flat != 0]
+        s2_array_flat = s2_array_flat[s2_array_flat != 0]
+        plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
         folder = os.path.dirname(raster_file).split(os.sep)[-1]
-        comparison_name = {"OUT_S5P": "S5P", "OUT_Insitu": "Insitu"}[folder]
-        regression = linregress(s2_array_flat, comparison_array_flat)
-        slope, intercept = regression.slope, regression.intercept
-        plt.xlabel = "s2_trucks"
-        plt.ylabel = comparison_name
-        plt.title = "S2 trucks vs. " + comparison_name
-       # plot(s2_array_flat, slope * x + intercept)
-      #  plot.text(10, 0, "r2: %s\nslope: %s" % (str(slope), str(intercept)))
-        plt.savefig(os.path.join(dir_comparison_plots, detections_basename.split(".gpkg")[0] + "_vs%s.png" %
+        comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
+        plt.ylabel("S2 trucks")
+        plt.xlabel(comparison_name)
+        plt.title("S2 trucks vs. %s on %s" % (comparison_name, date))
+        plt.savefig(os.path.join(dir_comparison_plots, detections_basename.split(".gpkg")[0] + "_vs_%s.png" %
                                  comparison_name))
         plt.close()
 
@@ -168,6 +227,7 @@ class Comparison:
         date_sort = np.argsort(dates)
         dates, n_detections = np.array(dates)[date_sort], np.int16(n_detections)[date_sort]
         dates = [date + " (%s)" % weekdays[date] for date in dates]
+        plt.close()
         plt.plot_date(dates, n_detections, xdate=True, color="#7b0c7c", alpha=0.8)
         plt.ylabel("Detected trucks")
         plt.title("Number of detected trucks Sentinel-2")
@@ -226,7 +286,7 @@ class Comparison:
 if __name__ == "__main__":
     if not os.path.exists(dir_comparison_detections):
         os.mkdir(dir_comparison_detections)
-    comparison = Comparison(process_dates, aoi_file_path)
+    comparison = Comparison(process_dates, aoi_file)
     comparison.run_comparison()
     comparison.plot_s2_series()
     print("Done")
