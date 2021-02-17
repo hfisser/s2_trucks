@@ -30,18 +30,18 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
     arr, meta = rio_read_all_bands(image_file)
     osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(image_file))
-    if os.path.exists(osm_file):
-        with rio.open(osm_file, "r") as src:
-            osm_mask = src.read(1)
-    else:
-        lat, lon = lat_from_meta(meta), lon_from_meta(meta)
-        bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(meta)))
-        osm_mask = get_osm_mask(bbox_epsg4326, meta["crs"], arr[0], {"lat": lat, "lon": lon},
-                                dir_osm)
-        meta["count"] = 1
-        meta["dtype"] = osm_mask.dtype
-        with rio.open(osm_file, "w", **meta) as tgt:
-            tgt.write(osm_mask, 1)
+#    if os.path.exists(osm_file):
+ #       with rio.open(osm_file, "r") as src:
+  #          osm_mask = src.read(1)
+   # else:
+    lat, lon = lat_from_meta(meta), lon_from_meta(meta)
+    bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(meta)))
+    osm_mask = get_osm_mask(bbox_epsg4326, meta["crs"], arr[0], {"lat": lat, "lon": lon},
+                            dir_osm)
+    meta["count"] = 1
+    meta["dtype"] = osm_mask.dtype
+    with rio.open(osm_file, "w", **meta) as tgt:
+        tgt.write(osm_mask, 1)
     arr *= osm_mask
     #arr[np.isnan(arr)] = 0.
    # arr = rescale(arr.copy(), 0, 1)
@@ -192,7 +192,7 @@ def get_smallest_deviation(a, value):
     return int(np.where(dev == dev.min())[0][0])
 
 
-def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means_full_arr):
+def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means):
     ndvi = normalized_ratio(sub_reflectances[3], sub_reflectances[0])
     sub_copy = sub_reflectances.copy() * 10
     sub_ratios_copy = sub_ratios.copy()
@@ -217,28 +217,32 @@ def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means_full_arr):
                                       [red_x, green_x, blue_x]):
         row_idx = len(t)
         y, x = y[0], x[0]
-        stack_normalized = sub_reflectances[0:4, y, x] / means_full_arr
+        stack = sub_reflectances[0:4, y, x]
+        stack_normalized = sub_reflectances[0:4, y, x].copy() / means
         t.loc[row_idx, "label"] = label
         t.loc[row_idx, "label_int"] = label_int
-        t.loc[row_idx, "red"] = stack_normalized[0]
-        t.loc[row_idx, "green"] = stack_normalized[1]
-        t.loc[row_idx, "blue"] = stack_normalized[2]
-        t.loc[row_idx, "nir"] = stack_normalized[3]
+        t.loc[row_idx, "red"] = stack[0]
+        t.loc[row_idx, "green"] = stack[1]
+        t.loc[row_idx, "blue"] = stack[2]
+        t.loc[row_idx, "nir"] = stack[3]
         t.loc[row_idx, "ndvi"] = ndvi[y, x]
-        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized, 0)
-        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized, 0)
-        t.loc[row_idx, "red_blue_ratio"] = sub_ratios[0, y, x]
-        t.loc[row_idx, "green_blue_ratio"] = sub_ratios[3, y, x]
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack, 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack, 0)
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
         t.loc[row_idx, "red_normalized"] = stack_normalized[0]
         t.loc[row_idx, "green_normalized"] = stack_normalized[1]
         t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
         t.loc[row_idx, "nir_normalized"] = stack_normalized[3]
+        t.loc[row_idx, "red_global_mean"] = means[0]
+        t.loc[row_idx, "green_global_mean"] = means[1]
+        t.loc[row_idx, "blue_global_mean"] = means[2]
+        t.loc[row_idx, "nir_global_mean"] = means[3]
     return t
 
 
-def add_background(out_pd, reflectances, ratios, means, n_background):
+def add_background(t, reflectances, ratios, means, n_background):
     ndvi = normalized_ratio(reflectances[3], reflectances[0])
-    #var = np.nanvar(reflectances[0:3], 0)
     label_int, label = 1, "background"
     not_nan_reflectances = np.int8(~np.isnan(reflectances[0:4]))
     not_nan_ratios = np.int8(~np.isnan(ratios))
@@ -249,24 +253,29 @@ def add_background(out_pd, reflectances, ratios, means, n_background):
         reflectances_normalized[band_idx] = reflectances[band_idx].copy() / mean_value
     for random_idx in zip(random_indices):
         y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
-        stack = reflectances_normalized[:, y_arr_idx, x_arr_idx]
-        row_idx = len(out_pd)
-        out_pd.loc[row_idx, "label_int"] = label_int
-        out_pd.loc[row_idx, "label"] = label
-        out_pd.loc[row_idx, "red"] = reflectances[0, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "green"] = reflectances[1, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "blue"] = reflectances[2, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "nir"] = reflectances[3, y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
-        out_pd.loc[row_idx, "reflectance_std"] = np.nanstd(stack[0:3], 0)
-        out_pd.loc[row_idx, "reflectance_var"] = np.nanvar(stack[0:3], 0)
-        out_pd.loc[row_idx, "red_normalized"] = stack[0]
-        out_pd.loc[row_idx, "green_normalized"] = stack[1]
-        out_pd.loc[row_idx, "blue_normalized"] = stack[2]
-        out_pd.loc[row_idx, "nir_normalized"] = stack[3]
-        out_pd.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
-        out_pd.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
-    return out_pd
+        stack_normalized = reflectances_normalized[:, y_arr_idx, x_arr_idx]
+        stack = reflectances[:, y_arr_idx, x_arr_idx]
+        row_idx = len(t)
+        t.loc[row_idx, "label_int"] = label_int
+        t.loc[row_idx, "label"] = label
+        t.loc[row_idx, "red"] = stack[0]
+        t.loc[row_idx, "green"] = stack[1]
+        t.loc[row_idx, "blue"] = stack[2]
+        t.loc[row_idx, "nir"] = stack[3]
+        t.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack[0:3], 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack[0:3], 0)
+        t.loc[row_idx, "red_normalized"] = stack_normalized[0]
+        t.loc[row_idx, "green_normalized"] = stack_normalized[1]
+        t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
+        t.loc[row_idx, "nir_normalized"] = stack_normalized[3]
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
+        t.loc[row_idx, "red_global_mean"] = means[0]
+        t.loc[row_idx, "green_global_mean"] = means[1]
+        t.loc[row_idx, "blue_global_mean"] = means[2]
+        t.loc[row_idx, "nir_global_mean"] = means[3]
+    return t
 
 
 def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
