@@ -6,15 +6,16 @@ import geopandas as gpd
 import numpy as np
 import rasterio as rio
 import xarray as xr
+import shutil
+import matplotlib.pyplot as plt
 from datetime import datetime
-from glob import glob
-from shutil import rmtree
-from rasterio.transform import Affine
 from shapely.geometry import Polygon, box
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
+from detect_trucks.ObjectDelineator import ObjectExtractor
+from detect_trucks.IO import IO
 from array_utils.math import rescale, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 from osm_utils.utils import get_roads, rasterize_osm
@@ -28,7 +29,7 @@ dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
@@ -39,6 +40,7 @@ s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Wurmberg_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Zimmern_ob_Rottweil_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Röstebachtalbrücke_2018-04-10_2018-04-10_merged.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_12_10_2018.tiff")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156_y0_x0.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2B_MSIL2A_20200914T095029_N0214_R079_T34UDC_20200914T121343_y0_x0.tif")
@@ -48,18 +50,44 @@ tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=
 
 do_tuning = False
 truth_path = os.path.join(dirs["truth"], "spectra_ml.csv")
-#t = pd.read_csv(truth_path)
-#t.index = range(len(t))
-#matches = np.where(np.int8(t["label"] == "blue") * np.int8(t["blue"] < t["red"]))[0]
-#blue_drop0 = np.random.choice(matches, int(len(matches)))
-#t.drop(blue_drop0, inplace=True)
-#t.index = range(len(t))
-#matches = np.where(np.int8(t["label"] == "blue") * np.int8(t["blue"] < t["green"]))[0]
-#blue_drop1 = np.random.choice(matches, int(len(matches)))
-#t.drop(blue_drop1, inplace=True)
-#t.index = range(len(t))
-#t.to_csv(truth_path)
+f = os.path.join(dirs["truth"], "spectra_ml1.csv")
+if not os.path.exists(f):
+    shutil.copyfile(truth_path, f)
+t = pd.read_csv(truth_path)
 
+"""
+salz = os.path.join(dirs["main"], "Salzbergen_2018-06-07_2018-06-07_boxes.gpkg")
+nieder = os.path.join(dirs["main"], "Nieder_Seifersdorf_2018-10-31_2018-10-31_boxes.gpkg")
+salz_boxes = gpd.read_file(salz)
+nieder_boxes = gpd.read_file(nieder)##
+
+thresholds = np.arange(0.1, 0.9, 0.025)
+thresholds_scores = np.arange(1.25, 3, 0.025)
+n_salz = []
+scores_salz = []
+for threshold in thresholds:
+    n_salz.append(np.count_nonzero(salz_boxes["mean_spectral_probability"] > threshold))
+for threshold in thresholds_scores:
+    subset = salz_boxes[salz_boxes["mean_spectral_probability"] > threshold]
+    score = np.float32(salz_boxes["mean_spectral_probability"] + salz_boxes["mean_max_spectral_probability"] +
+                         np.max(np.array([salz_boxes["max_blue_probability"],
+                                          salz_boxes["max_green_probability"],
+                                          salz_boxes["max_red_probability"]])))
+    scores_salz.append(np.count_nonzero(score > threshold))
+n_nieder = []
+scores_nieder = []
+for threshold in thresholds:
+    n_nieder.append(np.count_nonzero(nieder_boxes["mean_spectral_probability"] > threshold))
+for threshold in thresholds_scores:
+    score = np.float32(nieder_boxes["mean_spectral_probability"] + nieder_boxes["mean_max_spectral_probability"] +
+                         np.max(np.array([nieder_boxes["max_blue_probability"],
+                                          nieder_boxes["max_green_probability"],
+                                          nieder_boxes["max_red_probability"]])))
+    scores_nieder.append(np.count_nonzero(score > threshold))
+
+plt.plot(thresholds, n_salz)
+plt.plot(thresholds, n_nieder)
+"""
 
 OSM_BUFFER = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
@@ -77,12 +105,13 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.pickle")
 
 class RFTruckDetector:
     def __init__(self):
-        self.rf_spectral = None
+        self.t0 = datetime.now()
+        self.rf = None
+        self.io = IO(self)
         self.lat, self.lon, self.meta = None, None, None
         self.variables = None
         self.truth_variables, self.truth_labels = None, None
         self.truth_path_tmp = None
-        self.high_std_mask, self.low_ndvi_mask, self.max_mask = None, None, None
         self.var_mask_blue, self.var_mask_green, self.var_mask_red = None, None, None
         self.blue_ratio_mask = None
         self.low_reflectance_mask = None
@@ -90,7 +119,7 @@ class RFTruckDetector:
 
     def train(self):
         try:
-            rf = self._read_model()
+            rf = self.io.read_model(MODEL_PATH)
         except FileNotFoundError:
             rf = RandomForestClassifier(n_estimators=N_ESTIMATORS,
                                         min_samples_split=MIN_SAMPLES_SPLIT,
@@ -101,7 +130,7 @@ class RFTruckDetector:
             self._prepare_truth()
             self._split_train_test()
             rf.fit(self.truth_variables["train"], self.truth_labels["train"])
-            pickle.dump(rf, open(MODEL_PATH, "wb"))
+            self.io.write_model(rf, MODEL_PATH)
      #   test_pred = rf.predict(self.truth_variables["test"])
       #  accuracy = metrics.accuracy_score(self.truth_labels["test"], test_pred)
 #        print("RF accuracy: %s" % accuracy)
@@ -110,7 +139,7 @@ class RFTruckDetector:
             os.remove(self.truth_path_tmp)
         except TypeError:
             pass
-        self.rf_spectral = rf
+        self.rf = rf
 
     def tune(self, tuning_path):
         self._split_train_test()
@@ -169,8 +198,8 @@ class RFTruckDetector:
         self._build_variables(bands_rescaled)
 
     def predict(self):
+        print("-" * 20 + "\nPredicting")
         t0 = datetime.now()
-        self.variables[:, self.low_ndvi_mask == 0] = np.nan
         vars_reshaped = []
         for band_idx in range(self.variables.shape[0]):
             vars_reshaped.append(self.variables[band_idx].flatten())
@@ -179,7 +208,7 @@ class RFTruckDetector:
         for var_idx in range(vars_reshaped.shape[1]):
             nan_mask[:, var_idx] = ~np.isnan(vars_reshaped[:, var_idx])  # exclude nans
         not_nan = np.nanmin(nan_mask, 1).astype(np.bool) * np.min(np.isfinite(vars_reshaped), 1).astype(np.bool)
-        predictions_flat = self.rf_spectral.predict_proba(vars_reshaped[not_nan])
+        predictions_flat = self.rf.predict_proba(vars_reshaped[not_nan])
         #probabilities_shaped = np.zeros_like(vars_reshaped[:, 1:4])
         probabilities_shaped = vars_reshaped[:, 0:4].copy()
         for idx in range(predictions_flat.shape[1]):
@@ -197,246 +226,29 @@ class RFTruckDetector:
         self.probabilities = probabilities_shaped
         classification = self._postprocess_prediction()
         self._elapsed(t0)
-        return classification.astype(np.int8)
+        return classification
 
     def extract_objects(self, predictions_arr):
-    #    with rio.open("C:\\Users\\Lenovo\\Downloads\\test96.tif", "r") as src:
-     #       predictions_arr = src.read(1)
-      #  with rio.open("C:\\Users\\Lenovo\\Downloads\\test98.tif", "r") as src:
-       #     self.probabilities = src.read(1)
-        t0 = datetime.now()
-        predictions_copy = predictions_arr.copy()  # copy because will be modified
-        probabilities_copy = self.probabilities.copy()
-        blue_ys, blue_xs = np.where(predictions_copy == 2)
-        out_gpd = gpd.GeoDataFrame(crs=self.meta["crs"])
-        detection_boxes, directions, direction_descriptions, speeds, mean_probabilities, sub_size = [], [], [], [], [], 9
-        for y_blue, x_blue in zip(blue_ys, blue_xs):
-            if predictions_copy[y_blue, x_blue] == 0:
-                continue
-            subset_9 = self._get_arr_subset(predictions_copy, y_blue, x_blue, sub_size).copy()
-            subset_3 = self._get_arr_subset(predictions_copy, y_blue, x_blue, 3).copy()
-            subset_9_probs = self._get_arr_subset(probabilities_copy, y_blue, x_blue, sub_size).copy()
-            half_idx_y = y_blue if subset_9.shape[0] < sub_size else int(subset_9.shape[0] * 0.5)
-            half_idx_x = x_blue if subset_9.shape[1] < sub_size else int(subset_9.shape[1] * 0.5)
-            try:
-                current_value = subset_9[half_idx_y, half_idx_x]
-            except IndexError:  # upper array edge
-                half_idx_y, half_idx_x = int(sub_size / 2), int(sub_size / 2)  # index from lower edge is ok
-                current_value = subset_9[half_idx_y, half_idx_x]
-            new_value = 100
-            if not all([value in subset_9 for value in [2, 3, 4]]):
-                continue
-            result_tuple = self._cluster_array(arr=subset_9,
-                                               probs=subset_9_probs,
-                                               point=[half_idx_y, half_idx_x],
-                                               new_value=new_value,
-                                               current_value=current_value,
-                                               yet_seen_indices=[],
-                                               yet_seen_values=[],
-                                               joker_played=False)
-            cluster = result_tuple[0]
-            if np.count_nonzero(cluster == new_value) < 3:
-                continue
-            else:
-                out_gpd, predictions_copy = self._postprocess_cluster(cluster, predictions_copy,
-                                                                      subset_3, y_blue, x_blue,
-                                                                      half_idx_y, half_idx_x, new_value, out_gpd)
-        self._elapsed(t0)
+        print("Extracting objects")
+ #       with rio.open("C:\\Users\\Lenovo\\Downloads\\test100.tif", "r") as src:
+  #          predictions_arr = src.read(1).astype(np.int8)
+   #     with rio.open("C:\\Users\\Lenovo\\Downloads\\test101.tif", "r") as src:
+    #        self.probabilities = np.zeros((4, predictions_arr.shape[0], predictions_arr.shape[1]))
+     #       for i in range(src.count):
+      #          self.probabilities[i] = src.read(i + 1)
+        extractor = ObjectExtractor(self)
+        out_gpd = extractor.delineate(predictions_arr)
+        self._elapsed(self.t0)
+        print("-" * 20)
         return out_gpd
-
-    def _cluster_array(self, arr, probs, point, new_value, current_value, yet_seen_indices, yet_seen_values,
-                       joker_played):
-        """
-        looks for non zeros in 3x3 window around point in array and assigns a new value to these non-zeros
-        :param arr: np array
-        :param point: list of int y, x indices
-        :param new_value: int value to assign
-        :param current_value: value from np array
-        :param yet_seen_indices: list of lists, each list is a point with int y, x indices that has been seen before
-        :param yet_seen_values: list of values, each value is a value at the yet_seen_indices
-        :return: tuple of np array and list
-        """
-        joker_played = True
-        if len(yet_seen_indices) == 0:
-            yet_seen_indices.append(point)
-            yet_seen_values.append(current_value)
-        arr_modified = arr.copy()
-        arr_modified[point[0], point[1]] = 0
-        window_3x3 = self._get_arr_subset(arr_modified.copy(), point[0], point[1], 3)
-        y, x, ys, xs, window_idx, offset_y, offset_x = point[0], point[1], [], [], 0, 0, 0
-        window_5x5_no_corners = self._eliminate_array_corners(self._get_arr_subset(arr_modified.copy(), y, x, 5), 1)
-        window_3x3_probs = self._get_arr_subset(probs, y, x, 3)
-        window_5x5_probs_no_corners = self._eliminate_array_corners(self._get_arr_subset(probs, y, x, 5), 1)
-        # first look for values on horizontal and vertical, if none given try corners
-        windows, windows_probs = [window_3x3, window_5x5_no_corners], [window_3x3_probs, window_5x5_probs_no_corners]
-        windows = windows[0:1] if current_value == 4 or joker_played else windows
-        while len(ys) == 0 and window_idx < len(windows):
-            window = windows[window_idx]
-            window_probs = windows_probs[window_idx]
-            offset_y, offset_x = int(window.shape[0] / 2), int(window.shape[1] / 2)  # offset for window ymin and xmin
-            go_next = (current_value + 1) in window or current_value == 2
-            target_value = current_value + 1 if go_next else current_value
-            match = window == target_value
-            ys, xs = np.where(match)
-            if len(ys) > 1:  # look for match with highest probability
-                window_probs_target = window_probs[target_value - 2] * match
-                max_prob = (window_probs_target == np.max(window_probs_target))
-                ys, xs = np.where(max_prob)
-            window_idx += 1
-        ymin, xmin = int(np.clip(point[0] - offset_y, 0, np.inf)), int(np.clip(point[1] - offset_x, 0, np.inf))
-        for y_local, x_local in zip(ys, xs):
-            y, x = ymin + y_local, xmin + x_local
-            if [y, x] not in yet_seen_indices or len(yet_seen_indices) == 0:
-                try:
-                    current_value = arr[y, x]
-                except IndexError:
-                    continue
-                if 4 in yet_seen_values and current_value <= 3:  # red yet seen but this is green or blue
-                    continue
-                arr_modified[y, x] = new_value
-                yet_seen_indices.append([y, x])
-                yet_seen_values.append(current_value)
-                # avoid picking many more reds than blues and greens
-                n_picks = [np.count_nonzero(np.array(yet_seen_values) == value) for value in [2, 3, 4]]
-                if n_picks[2] > n_picks[0] and n_picks[2] > n_picks[1]:
-                    break  # finish clustering in order to avoid picking many reds at the edge of object
-                if any([n > 5 for n in n_picks]):
-                    return np.zeros_like(arr_modified), yet_seen_indices, yet_seen_values, joker_played
-                arr_modified, yet_seen_indices, yet_seen_values, joker_played = self._cluster_array(arr_modified,
-                                                                                                    probs,
-                                                                                                    [y, x],
-                                                                                                    new_value,
-                                                                                                    current_value,
-                                                                                                    yet_seen_indices,
-                                                                                                    yet_seen_values,
-                                                                                                    joker_played)
-        arr_modified[point[0], point[1]] = new_value
-        return arr_modified, yet_seen_indices, yet_seen_values, joker_played
-
-    def _postprocess_cluster(self, cluster, preds_copy, prediction_subset_3, y_blue, x_blue, half_idx_y, half_idx_x,
-                             new_value, out_gpd):
-        # add neighboring blue in 3x3 window around blue
-        ys_blue_additional, xs_blue_additional = np.where(prediction_subset_3 == 2)
-        ys_blue_additional += half_idx_y - 1  # get index in subset
-        xs_blue_additional += half_idx_x - 1
-        for y_blue_add, x_blue_add in zip(ys_blue_additional, xs_blue_additional):
-            cluster[int(np.clip(y_blue_add, 0, np.inf)), int(np.clip(x_blue_add, 0, np.inf))] = new_value
-        cluster[cluster != new_value] = 0
-        cluster_ys, cluster_xs = np.where(cluster == new_value)
-        # corner of 9x9 subset
-        ymin_subset, xmin_subset = np.clip(y_blue - half_idx_y, 0, np.inf), np.clip(x_blue - half_idx_x, 0, np.inf)
-        cluster_ys += ymin_subset.astype(cluster_ys.dtype)
-        cluster_xs += xmin_subset.astype(cluster_xs.dtype)
-        ymin, xmin = np.min(cluster_ys), np.min(cluster_xs)
-        # +1 on index because Polygon has to extent up to upper bound of pixel (array coords at upper left corner)
-        ymax, xmax = np.max(cluster_ys) + 1, np.max(cluster_xs) + 1
-        # check if blue, green and red are given in box and box is large enough, otherwise drop
-        box_preds = preds_copy[ymin:ymax, xmin:xmax].copy()
-        box_probs = self.probabilities[1:, ymin:ymax, xmin:xmax].copy()
-        #box_probs = self.probabilities[:, ymin:ymax, xmin:xmax].copy()
-        max_prob_blue = np.nanmax(box_probs[0] * (box_preds == 2))
-        max_prob_green = np.nanmax(box_probs[1] * (box_preds == 3))
-        max_prob_red = np.nanmax(box_probs[2] * (box_preds == 4))
-        max_probs = [max_prob_blue, max_prob_green, max_prob_red]
-        spectral_probability = np.nanmean(max_probs)
-        mean_spectral_probability = np.nanmean(np.nanmax(box_probs, 0))
-        all_given = all([value in box_preds for value in [2, 3, 4]])
-        large_enough = box_preds.shape[0] > 2 or box_preds.shape[1] > 2
-        too_large = box_preds.shape[0] > 5 or box_preds.shape[1] > 5
-        too_large += box_preds.shape[0] > 4 and box_preds.shape[1] > 4
-        if too_large > 0 or not all_given or not large_enough:
-            return out_gpd, preds_copy
-        # calculate direction
-        blue_y, blue_x = np.where(box_preds == 2)
-        ry, rx = np.where(box_preds == 4)
-        # simply use first index
-        blue_indices = np.int8([blue_y[0], blue_x[0]])
-        red_indices = np.int8([ry[0], rx[0]])
-        blue_red_vector = red_indices - blue_indices
-        direction = self.calc_vector_direction_in_degree(blue_red_vector)
-        diameter = np.max(box_preds.shape) * 10 / 2  # 10 m resolution
-        speed = (diameter * (3600 / SECONDS_OFFSET_B02_B04)) * 0.001
-        # create output box
-        lon_min, lat_min = self.lon[xmin], self.lat[ymin]
-        try:
-            lon_max = self.lon[xmax]
-        except IndexError:  # may happen at edge of array
-            # calculate next coordinate beyond array bound -> this is just the upper boundary of the box
-            lon_max = self.lon[-1] + (self.lon[-1] - self.lon[-2])
-        try:
-            lat_max = self.lat[ymax]
-        except IndexError:
-            lat_max = self.lat[-1] + (self.lat[-1] - self.lat[-2])
-        cluster_box = Polygon(box(lon_min, lat_min, lon_max, lat_max))
-        if spectral_probability > 0.5:
-            # set box cells to zero value in predictions array
-            preds_copy[ymin:ymax, xmin:xmax] *= np.zeros_like(box_preds)
-            blue_indices = np.where(box_preds == 2)
-            for yb, xb in zip(blue_indices[0], blue_indices[1]):  # 3x3 around cell blues to 0
-                ymin, ymax = np.clip(yb - 1, 0, preds_copy.shape[0]), np.clip(yb + 2, 0, preds_copy.shape[0])
-                xmin, xmax = np.clip(xb - 1, 0, preds_copy.shape[1]), np.clip(xb + 2, 0, preds_copy.shape[1])
-                preds_copy[ymin:ymax, xmin:xmax] *= np.int8(preds_copy[ymin:ymax, xmin:xmax] != 2)
-            rox_idx = len(out_gpd)
-            for key, value in zip(["geometry", "id", "mean_spectral_probability",
-                                   "mean_max_spectral_probability", "max_blue_probability",
-                                   "max_green_probability", "max_red_probability", "direction_degree",
-                                   "direction_description", "speed"],
-                                  [cluster_box, rox_idx,
-                                   spectral_probability, mean_spectral_probability,
-                                   max_prob_blue, max_prob_green, max_prob_red, direction,
-                                   self.direction_degree_to_description(direction), speed]):
-                out_gpd.loc[rox_idx, key] = value
-        return out_gpd, preds_copy
-
-    def read_bands(self, file_path):
-        try:
-            with rio.open(file_path, "r") as src:
-                self.meta = src.meta
-                if src.count < 4:
-                    raise TypeError("Need 4 bands but %s given" % src.count)
-                band_stack = np.zeros((src.count, src.height, src.width), dtype=np.float32)
-                for band_idx in range(src.count):
-                    band_stack[band_idx] = src.read(band_idx + 1)
-        except rio.errors.RasterioIOError as e:
-            print("Could not read from %s" % file_path)
-            raise e
-        else:
-            print("Read %s bands from %s" % (self.meta["count"], file_path))
-        return band_stack
-
-    def prediction_raster_to_gtiff(self, prediction_raster, file_path):
-        if not any([file_path.endswith(suffix) for suffix in [".tif", ".tiff"]]):
-            file_path += ".tiff"
-        meta_copy = self.meta.copy()
-        meta_copy["count"] = 1
-        meta_copy["dtype"] = prediction_raster.dtype
-        try:
-            with rio.open(file_path, "w", **meta_copy) as tgt:
-                tgt.write(prediction_raster, 1)
-        except rio.errors.RasterioIOError as e:
-            print("Could not write to %s" % file_path)
-            raise e
-        else:
-            print("Wrote to: %s" % file_path)
-
-    def prediction_boxes_to_gpkg(self, prediction_boxes, file_path):
-        self._write_boxes(file_path, prediction_boxes, ".gpkg")
-
-    def prediction_boxes_to_geojson(self, prediction_boxes, file_path):
-        self._write_boxes(file_path, prediction_boxes, ".geojson")
 
     def _prepare_truth(self):
         truth_data = pd.read_csv(truth_path, index_col=0)
-#        truth_data["red_blue_ratio"] = normalized_ratio(np.float32(truth_data["red_normalized"]),
- #                                                       np.float32(truth_data["blue_normalized"]))
-  #      truth_data["green_blue_ratio"] = normalized_ratio(np.float32(truth_data["green_normalized"]),
-   #                                                       np.float32(truth_data["blue_normalized"]))
         truth_data.index, label = list(range(len(truth_data))), "background"
         b = np.where(truth_data["label"] == "background")[0]
-     #   truth_data.drop(np.random.choice(b, int(len(b)), replace=False), inplace=True)
         truth_data.index = list(range(len(truth_data)))
-        for idx in np.random.choice(b, int(len(b) * 0.96), replace=False):
-            truth_data.drop(idx, inplace=True)
+#        for idx in np.random.choice(b, int(len(b) * 0.25), replace=False):
+ #           truth_data.drop(idx, inplace=True)
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
@@ -445,10 +257,11 @@ class RFTruckDetector:
 
     def _split_train_test(self):
         truth_data = pd.read_csv(self.truth_path_tmp, index_col=0)
-      #  truth_data["red_blue_ratio"] = normalized_ratio(np.float32(truth_data["red"]), np.float32(truth_data["blue"]))
-       # truth_data["green_blue_ratio"] = normalized_ratio(np.float32(truth_data["green"]), np.float32(truth_data["blue"]))
         labels, variables = truth_data["label_int"], []
-        for key in ["reflectance_std", "reflectance_var", "red_blue_ratio", "green_blue_ratio",
+        truth_data["red_blue_ratio"] = normalized_ratio(np.float32(truth_data["red_normalized"]), np.float32(truth_data["blue_normalized"]))
+        truth_data["green_blue_ratio"] = normalized_ratio(np.float32(truth_data["green_normalized"]), np.float32(truth_data["blue_normalized"]))
+        truth_data["reflectance_var"] = np.nanvar(np.float32([truth_data["red"], truth_data["green"], truth_data["blue"]]), 0)
+        for key in ["reflectance_var", "red_blue_ratio", "green_blue_ratio",
                     "red_normalized", "green_normalized", "blue_normalized", "nir_normalized"]:
             variables.append(truth_data[key])
         variables = np.float32(variables).swapaxes(0, 1)
@@ -457,77 +270,42 @@ class RFTruckDetector:
         self.truth_labels = dict(train=labels_train, test=labels_test)
 
     def _build_variables(self, band_stack):
-        t0 = datetime.now()
-      #  rgb_var = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
         green_blue_ratio = normalized_ratio(band_stack[1], band_stack[2])
         red_blue_ratio = normalized_ratio(band_stack[0], band_stack[2])
-       # self.var_mask_blue = np.int8(rgb_var > np.nanquantile(rgb_var, [0.1]))
-      #  self.var_mask_green = np.int8(rgb_var > np.nanquantile(rgb_var, [0.75]))
-       # self.var_mask_red = np.int8(rgb_var > np.nanquantile(rgb_var, [0.75]))
         green_red_ratio = normalized_ratio(band_stack[1], band_stack[0])
-   #     self.var_mask_green = np.int8(green_red_ratio > np.nanquantile(green_red_ratio, [0.05]))
-    #    self.var_mask_red = np.int8(red_blue_ratio > np.nanquantile(red_blue_ratio, [0.05]))
-        red_blue_mask = np.int8(red_blue_ratio < np.nanquantile(red_blue_ratio, [0.99]))
-        green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.99]))
-#        self.blue_ratio_mask = green_blue_mask * red_blue_mask
-   #     self.low_reflectance_mask = np.zeros_like(band_stack[0])
-    #    self.low_reflectance_mask += np.int8(band_stack[0] > np.nanquantile(band_stack[0], [0.05]))
-     #   self.low_reflectance_mask += np.int8(band_stack[1] > np.nanquantile(band_stack[1], [0.05]))
-      #  self.low_reflectance_mask += np.int8(band_stack[2] > np.nanquantile(band_stack[2], [0.05]))
-       # self.low_reflectance_mask[self.low_reflectance_mask >= 1] = 1
-        #self.low_ndvi_mask = np.int8(normalized_ratio(band_stack[3], band_stack[0]) < 0.9)
+        red_blue_mask = np.int8(red_blue_ratio < np.nanquantile(red_blue_ratio, [0.25]))
+        green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.25]))
+        self.blue_ratio_mask = green_blue_mask * red_blue_mask
+        self.low_reflectance_mask = np.zeros_like(band_stack[0])
+        self.low_reflectance_mask += np.int8(band_stack[0] > np.nanquantile(band_stack[0], [0.25]))
+        self.low_reflectance_mask += np.int8(band_stack[1] > np.nanquantile(band_stack[1], [0.25]))
+        self.low_reflectance_mask += np.int8(band_stack[2] > np.nanquantile(band_stack[2], [0.25]))
+        self.low_reflectance_mask[self.low_reflectance_mask >= 1] = 1
         band_stack_normalized = band_stack.copy()
         for band_idx in range(band_stack.shape[0]):
             band_stack_normalized[band_idx] /= np.nanmean(band_stack_normalized[band_idx])
-        variables = np.zeros((8, band_stack.shape[1], band_stack.shape[2]), dtype=np.float16)
-        variables[0] = np.nanstd(band_stack_normalized[0:3], 0, dtype=np.float16)
-        variables[1] = np.nanvar(band_stack_normalized[0:3], 0, dtype=np.float16)
-        variables[2] = normalized_ratio(band_stack_normalized[0], band_stack_normalized[2]).astype(np.float16)  # red/blue
-        variables[3] = normalized_ratio(band_stack_normalized[1], band_stack_normalized[2]).astype(np.float16)  # green/blue
-        variables[4] = band_stack_normalized[0]
-        variables[5] = band_stack_normalized[1]
-        variables[6] = band_stack_normalized[2]
-        variables[7] = band_stack_normalized[3]
+        variables = np.zeros((7, band_stack.shape[1], band_stack.shape[2]), dtype=np.float16)
+        variables[0] = np.nanvar(band_stack_normalized[0:3], 0, dtype=np.float16)
+        variables[1] = normalized_ratio(band_stack_normalized[0], band_stack_normalized[2]).astype(np.float16)  # red/blue
+        variables[2] = normalized_ratio(band_stack_normalized[1], band_stack_normalized[2]).astype(np.float16)  # green/blue
+        variables[3] = band_stack_normalized[0]
+        variables[4] = band_stack_normalized[1]
+        variables[5] = band_stack_normalized[2]
+        variables[6] = band_stack_normalized[3]
         meta = self.meta.copy()
         meta["count"] = variables.shape[0]
         meta["dtype"] = np.float32
         with rio.open(os.path.join(dirs["main"], "test1.tiff"), "w", **meta) as tgt:
             for idx in range(variables.shape[0]):
                 tgt.write(variables[idx].astype(np.float32), idx + 1)
-        meta = self.meta.copy()
-        meta["count"] = 1
-        meta["dtype"] = np.float32
-#        with rio.open(os.path.join(dirs["main"], "var_mask_blue.tiff"), "w", **meta) as tgt:
- #           tgt.write(self.var_mask_blue.astype(np.float32), 1)
-  #      with rio.open(os.path.join(dirs["main"], "var_mask_green.tiff"), "w", **meta) as tgt:
-   #         tgt.write(self.var_mask_green.astype(np.float32), 1)
-    #    with rio.open(os.path.join(dirs["main"], "var_mask_red.tiff"), "w", **meta) as tgt:
-     #       tgt.write(self.var_mask_red.astype(np.float32), 1)
-      #  with rio.open(os.path.join(dirs["main"], "blue_ratio_mask.tiff"), "w", **meta) as tgt:
-       #     tgt.write(self.blue_ratio_mask.astype(np.float32), 1)
-        self._elapsed(t0)
         self.variables = variables
-
-    def _measure_cluster(self, arr, value, ys, xs, n):
-        for next_y, next_x in zip(ys, xs):
-            n += 1
-            sub_3x3 = self._get_arr_subset(arr, next_y, next_x, 3).copy()
-            sub_3x3[1, 1] = 0
-            arr_copy = np.zeros_like(arr)
-            ymin, ymax = np.clip(next_y - 1, 0, arr.shape[0]), np.clip(next_y + 2, 0, arr.shape[0])
-            xmin, xmax = np.clip(next_x - 1, 0, arr.shape[1]), np.clip(next_x + 2, 0, arr.shape[1])
-            arr_copy[ymin:ymax, xmin:xmax] = sub_3x3
-            arr[next_y, next_x] = 0
-            ys, xs = np.where(arr_copy == value)
-            n = self._measure_cluster(arr, value, ys, xs, n)
-        return n
 
     def _eliminate_clusters(self, arr):
         for value in [2, 3, 4]:  # eliminate large clusters of pixels
             arr_copy = arr.copy()
             ys, xs = np.where(arr_copy == value)
             for y, x in zip(ys, xs):
-                subset_3 = self._get_arr_subset(arr, y, x, 3)
+                subset_3 = self.get_arr_subset(arr, y, x, 3)
                 n_matches = np.count_nonzero(subset_3 == value)
                 single_blue = value == 2 and n_matches == 1 and np.count_nonzero(~np.isnan(subset_3)) == 0
                 if n_matches > (subset_3.shape[0] * subset_3.shape[1]) * 0.5 or single_blue:
@@ -535,24 +313,26 @@ class RFTruckDetector:
         return arr
 
     def _postprocess_prediction(self):
-        for idx, threshold in zip(range(self.probabilities.shape[0]), (0.9, 0.3, 0.3, 0.3)):
+        for idx, threshold in zip(range(self.probabilities.shape[0] - 1), (0.4, 0.4, 0.4, 0.4)):
             self.probabilities[idx, self.probabilities[idx] < threshold] = 0
         classification = np.argmax(self.probabilities, 0) + 1
-       # classification = np.argmax(self.probabilities, 0) + 2
-   #     classification[(self.probabilities[0] < 0.3) * (classification == 2)] = 0
-    #    classification[(self.probabilities[1] < 0.3) * (classification == 3)] = 0
-     #   classification[(self.probabilities[2] < 0.3) * (classification == 4)] = 0
-        #     classification[self.low_ndvi_mask == 0] = 0
-    #    classification[(np.int8(self.blue_ratio_mask == 0) * np.int8(classification == 2)) == 1] = 0
     #    classification[self.low_reflectance_mask == 0] = 0
-  #      classification[(np.int8(self.var_mask_blue == 0) * np.int8(classification == 2)) == 1] = 0
-   #     classification[(np.int8(self.var_mask_green == 0) * np.int8(classification == 3)) == 1] = 0
-    #    classification[(np.int8(self.var_mask_red == 0) * np.int8(classification == 4)) == 1] = 0
-     #   classification = self._eliminate_clusters(classification)
-        return classification
+        return classification.astype(np.int8)
+
+    def read_bands(self, path):
+        return self.io.read_bands(path)
+
+    def prediction_raster_to_gtiff(self, the_raster, path):
+        self.io.prediction_raster_to_gtiff(the_raster, path)
+
+    def prediction_boxes_to_gpkg(self, the_gpd, path):
+        self.io.prediction_boxes_to_gpkg(the_gpd, path)
+
+    def prediction_boxes_to_geojson(self, the_gpd, path):
+        self.io.prediction_boxes_to_geojson(the_gpd, path)
 
     @staticmethod
-    def _get_arr_subset(arr, y, x, size):
+    def get_arr_subset(arr, y, x, size):
         pseudo_max = 1e+30
         size_low = int(size / 2)
         size_up = int(size / 2)
@@ -570,7 +350,7 @@ class RFTruckDetector:
         return subset
 
     @staticmethod
-    def _eliminate_array_corners(arr, assign_value):
+    def eliminate_array_corners(arr, assign_value):
         y_shape_idx = 1 if len(arr.shape) == 3 else 0
         y_max, x_max = arr.shape[y_shape_idx], arr.shape[y_shape_idx + 1]
         ys, xs = [0, 0, y_max, y_max], [0, x_max, 0, x_max]
@@ -583,6 +363,35 @@ class RFTruckDetector:
             except IndexError:  # edge
                 continue
         return arr
+
+    @staticmethod
+    def calc_speed(box_shape):
+        diameter = np.max(box_shape) * 10 / 2  # 10 m resolution
+        return (diameter * (3600 / SECONDS_OFFSET_B02_B04)) * 0.001
+
+    @staticmethod
+    def calc_vector_direction_in_degree(vector):
+        # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
+        y_offset, x_offset = 90 if vector[0] > 0 else 0, 90 if vector[1] < 0 else 0
+        offset = 180 if y_offset == 0 and x_offset == 90 else 0
+        if vector[0] == 0:
+            direction = 0.
+        else:
+            direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
+        direction += offset + y_offset + x_offset
+        return direction
+
+    @staticmethod
+    def direction_degree_to_description(direction_degree):
+        step = 22.5
+        bins = np.arange(0, 359, step, dtype=np.float32)
+        descriptions = np.array(["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SEE", "S", "SSW", "SW", "WSW",
+                                 "W", "WNW", "NW", "NNW"])
+        i, b = 0, -1
+        while b < direction_degree and i < len(bins):
+            b = bins[i]
+            i += 1
+        return descriptions[i - 1]
 
     @staticmethod
     def _get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
@@ -599,53 +408,6 @@ class RFTruckDetector:
     @staticmethod
     def _elapsed(start_time):
         print("Elapsed: %s s" % (datetime.now() - start_time).total_seconds())
-
-    @staticmethod
-    def _read_model():
-        try:
-            model = pickle.load(open(MODEL_PATH, "rb"))
-        except FileNotFoundError as e:
-            raise FileNotFoundError("Model file not found at: %s" % MODEL_PATH)
-        return model
-
-    @staticmethod
-    def _write_boxes(file_path, prediction_boxes, suffix):
-        if not file_path.endswith(suffix):
-            file_path += suffix
-        drivers = {".geojson": "GeoJSON", ".gpkg": "GPKG"}
-        try:
-            prediction_boxes.to_file(file_path, driver=drivers[suffix])
-        except TypeError as e:
-            raise e
-        else:
-            print("Wrote to: %s" % file_path)
-
-    @staticmethod
-    def calc_vector_direction_in_degree(vector):
-        # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
-        y_offset = 90 if vector[0] > 0 else 0
-        x_offset = 90 if vector[1] < 0 else 0
-        offset = 180 if y_offset == 0 and x_offset == 90 else 0
-        if vector[0] == 0:
-            direction = 0.
-        else:
-            direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
-        direction += offset + y_offset + x_offset
-        return direction
-
-    @staticmethod
-    def direction_degree_to_description(direction_degree):
-        step = 22.5
-        bins = np.arange(0, 359, step, dtype=np.float32)
-        descriptions = np.array(["N", "NNE", "NE", "ENE",
-                                 "E", "ESE", "SE", "SEE",
-                                 "S", "SSW", "SW", "WSW",
-                                 "W", "WNW", "NW", "NNW"])
-        i, b = 0, -1
-        while b < direction_degree and i < len(bins):
-            b = bins[i]
-            i += 1
-        return descriptions[i - 1]
 
 
 if __name__ == "__main__":
