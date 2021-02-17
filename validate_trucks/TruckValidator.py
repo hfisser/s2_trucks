@@ -33,7 +33,7 @@ NAME_HOUR = "Stunde"
 NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
-OSM_BUFFER = 30
+OSM_BUFFER = 20
 hour, minutes, year = 10, 15, 2018
 
 validate = "boxes"
