@@ -56,7 +56,7 @@ process_dates = ["10-04-2018",
                  "23-08-2018",
                  "19-09-2018",
                  "12-10-2018"]
-comparison_variables = ["var_mod_NO2_AK_coulumn"]
+comparison_variables = ["var_VCDtropo", "var_mod_NO2_AK_coulumn"]
 lon_crop = 10.6695
 uba_station_buffer = 10000  # meters
 
@@ -93,8 +93,9 @@ class Comparison:
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
             for comparison_variable in comparison_variables:
-                file_prefix = {"var_mod_NO2_AK_coulumn": "test_tropomi_NO2_"}[comparison_variable]
-                dir_target = [dir_comparison_s5p][int("NO2" not in file_prefix)]
+                file_prefix = {"var_mod_NO2_AK_coulumn": "test_tropomi_NO2_",
+                               "var_VCDtropo": "test_tropomi_NO2_"}[comparison_variable]
+                dir_target = [dir_comparison_s5p, dir_comparison_s5p][int("NO2" in file_prefix)]
                 split = file_str.split("_")
                 d, m, y = split[-3], split[-2], split[-1]
                 try:
@@ -102,6 +103,7 @@ class Comparison:
                 except IndexError:
                     continue
                 self.compare_s5p_no2(detections_file, comparison_raster_file, comparison_variable, "-".join([y, m, d]))
+        self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
 
     @staticmethod
     def compare_insitu_no2(detection_files):
@@ -120,7 +122,6 @@ class Comparison:
             dates = []
             for idx, detection_file in enumerate(detection_files):
                 detections = gpd.read_file(detection_file)
-                detections_basename = os.path.basename(detection_file)
                 file_split = detection_file.split("_")
                 date = file_split[-2] + file_split[-3] + file_split[-4]
                 dates.append(date)
@@ -152,7 +153,7 @@ class Comparison:
             plt.close()
 
     @staticmethod
-    def compare_s5p_no2(detections_file, raster_file, raster_variable_name, date):
+    def compare_s5p_no2(detections_file, raster_file, raster_variable_name, date_of_interest):
         """
         reads detections and raster tiles, number of detections in each cell is compared with n detections
         :param detections_file: str file path to detections
@@ -200,16 +201,16 @@ class Comparison:
             tgt.write(s2_trucks_array, 1)
         # plot detections vs. comparison array
         s2_array_flat, comparison_array_flat = s2_trucks_array.flatten(), comparison_array.flatten()
-        comparison_array_flat = comparison_array_flat[s2_array_flat != 0]
-        s2_array_flat = s2_array_flat[s2_array_flat != 0]
+        comparison_array_flat = comparison_array_flat[s2_array_flat > 0]
+        s2_array_flat = s2_array_flat[s2_array_flat > 0]
         plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
         folder = os.path.dirname(raster_file).split(os.sep)[-1]
         comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
         plt.ylabel("S2 trucks")
         plt.xlabel(comparison_name)
-        plt.title("S2 trucks vs. %s on %s" % (comparison_name, date))
-        plt.savefig(os.path.join(dir_comparison_plots, detections_basename.split(".gpkg")[0] + "_vs_%s.png" %
-                                 comparison_name))
+        plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
+        plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_vs_%s.png" %
+                                 detections_basename.split(".gpkg")[0]))
         plt.close()
 
     def plot_s2_series(self):
