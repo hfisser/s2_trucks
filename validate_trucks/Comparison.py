@@ -149,7 +149,7 @@ class Comparison:
                      np.nanquantile(y, [0.95])[0], "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
                                                                              np.round(regress.slope, 2)),
                      fontsize=8)
-            plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=150)
+            plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=200)
             plt.close()
 
     @staticmethod
@@ -280,7 +280,7 @@ class Comparison:
         plt.axes().xaxis.set_tick_params(labelsize=8)
         plt.axes().yaxis.set_tick_params(labelsize=8)
         plt.savefig(os.path.join(dir_comparison_plots, "s2_hannover_braunschweig_station_comparison_series.png"),
-                    dpi=150)
+                    dpi=200)
         plt.close()
 
 

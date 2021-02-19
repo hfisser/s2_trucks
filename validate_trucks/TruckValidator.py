@@ -209,8 +209,7 @@ class Validator:
                 detections_within.append(row)
         self.detections = gpd.GeoDataFrame(detections_within, crs=self.detections.crs)
 
-    @staticmethod
-    def validate_boxes():
+    def validate_boxes(self):
         tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
         try:
             boxes_validation_pd = pd.read_csv(boxes_validation_file)
@@ -230,36 +229,36 @@ class Validator:
             validation_boxes = gpd.read_file(os.path.join(dir_labels,
                                                           os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
             extent = validation_boxes.total_bounds  # process only subset where boxes given
-            diff_ymin, diff_ymax = np.abs(lat - extent[1]), np.abs(lat - extent[3])
+            diff_ymin, diff_ymax = np.abs(lat - extent[3]), np.abs(lat - extent[1])
             diff_xmin, diff_xmax = np.abs(lon - extent[0]), np.abs(lon - extent[2])
-            ymin, ymax = np.where(diff_ymin == np.min(diff_ymin))[0][0], np.where(diff_ymax == np.min(diff_ymax))[0][0]
-            xmin, xmax = np.where(diff_xmin == np.min(diff_xmin))[0][0], np.where(diff_xmax == np.min(diff_xmax))[0][0]
-            rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax, "xmax": xmax})
+            ymin, ymax = np.argmin(diff_ymin), np.argmin(diff_ymax)
+            xmin, xmax = np.argmin(diff_xmin), np.argmin(diff_xmax)
+            rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax + 1, "xmax": xmax + 1})
             rf_td.train()
             prediction_array = rf_td.predict()
             prediction_boxes = rf_td.extract_objects(prediction_array)
             name = os.path.basename(img_file).split(".tif")[0]
-            prediction_boxes_file = os.path.join(dir_validation, name + "_boxes")
-            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(dir_validation, name + "_raster"))
+            prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes")
+            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(self.dirs["detections"], name + "_raster"))
             rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
-            prediction_boxes_clipped = gpd.clip(prediction_boxes, box(extent[0], extent[1], extent[2], extent[3]))
+           # prediction_boxes_clipped = gpd.clip(prediction_boxes, box(extent[0], extent[1], extent[2], extent[3]))
             producer_n, user_n = 0, 0
-            for prediction_box in prediction_boxes_clipped.geometry:
+            for prediction_box in prediction_boxes.geometry:
                 for validation_box in validation_boxes.geometry:
                     if prediction_box.intersects(validation_box):
                         producer_n += 1
                         break
             for validation_box in validation_boxes.geometry:
-                for prediction_box in prediction_boxes_clipped.geometry:
+                for prediction_box in prediction_boxes.geometry:
                     if validation_box.intersects(prediction_box):
                         user_n += 1
                         break
             prediction_array, band_data, rf_td = None, None, None
             row_idx = len(boxes_validation_pd)
             boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
-            boxes_validation_pd.loc[row_idx, "producer_percentage"] = producer_n / len(prediction_boxes_clipped) * 100
+            boxes_validation_pd.loc[row_idx, "producer_percentage"] = producer_n / len(prediction_boxes) * 100
             boxes_validation_pd.loc[row_idx, "user_percentage"] = user_n / len(validation_boxes) * 100
-            boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes_clipped)
+            boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes)
             boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
             boxes_validation_pd.to_csv(boxes_validation_file)
 
