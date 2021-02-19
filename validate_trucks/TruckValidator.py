@@ -37,7 +37,7 @@ OSM_BUFFER = 20
 hour, minutes, year = 10, 15, 2018
 
 validate = "boxes"
-validate = "bast"
+#validate = "bast"
 
 stations = dict()
 stations_pd = pd.read_csv(os.path.join(os.path.dirname(aois_file), "validation_stations.csv"), sep=";")
@@ -225,7 +225,16 @@ class Validator:
             # detect on whole array
             rf_td = RFTruckDetector()
             band_data = rf_td.read_bands(img_file)
-            rf_td.preprocess_bands(band_data)
+            lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
+            # read labels
+            validation_boxes = gpd.read_file(os.path.join(dir_labels,
+                                                          os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
+            extent = validation_boxes.total_bounds  # process only subset where boxes given
+            diff_ymin, diff_ymax = np.abs(lat - extent[1]), np.abs(lat - extent[3])
+            diff_xmin, diff_xmax = np.abs(lon - extent[0]), np.abs(lon - extent[2])
+            ymin, ymax = np.where(diff_ymin == np.min(diff_ymin))[0][0], np.where(diff_ymax == np.min(diff_ymax))[0][0]
+            xmin, xmax = np.where(diff_xmin == np.min(diff_xmin))[0][0], np.where(diff_xmax == np.min(diff_xmax))[0][0]
+            rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax, "xmax": xmax})
             rf_td.train()
             prediction_array = rf_td.predict()
             prediction_boxes = rf_td.extract_objects(prediction_array)
@@ -233,10 +242,6 @@ class Validator:
             prediction_boxes_file = os.path.join(dir_validation, name + "_boxes")
             rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(dir_validation, name + "_raster"))
             rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
-            # read labels
-            validation_boxes = gpd.read_file(os.path.join(dir_labels,
-                                                          os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
-            extent = validation_boxes.total_bounds
             prediction_boxes_clipped = gpd.clip(prediction_boxes, box(extent[0], extent[1], extent[2], extent[3]))
             producer_n, user_n = 0, 0
             for prediction_box in prediction_boxes_clipped.geometry:
@@ -249,6 +254,7 @@ class Validator:
                     if validation_box.intersects(prediction_box):
                         user_n += 1
                         break
+            prediction_array, band_data, rf_td = None, None, None
             row_idx = len(boxes_validation_pd)
             boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
             boxes_validation_pd.loc[row_idx, "producer_percentage"] = producer_n / len(prediction_boxes_clipped) * 100

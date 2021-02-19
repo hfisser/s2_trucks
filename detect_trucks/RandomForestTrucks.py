@@ -10,6 +10,7 @@ import shutil
 import matplotlib.pyplot as plt
 from datetime import datetime
 from shapely.geometry import Polygon, box
+from rasterio.transform import Affine
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import RandomizedSearchCV
@@ -40,7 +41,7 @@ s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Wurmberg_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Zimmern_ob_Rottweil_2018-09-27_2018-09-27_merged.tiff")
 #s2_file = os.path.join(dirs["s2_data"], "s2_bands_Röstebachtalbrücke_2018-04-10_2018-04-10_merged.tiff")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_12_10_2018.tiff")
+#s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_12_10_2018.tiff")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156_y0_x0.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
 #s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2B_MSIL2A_20200914T095029_N0214_R079_T34UDC_20200914T121343_y0_x0.tif")
@@ -55,50 +56,16 @@ if not os.path.exists(f):
     shutil.copyfile(truth_path, f)
 t = pd.read_csv(truth_path)
 
-"""
-salz = os.path.join(dirs["main"], "Salzbergen_2018-06-07_2018-06-07_boxes.gpkg")
-nieder = os.path.join(dirs["main"], "Nieder_Seifersdorf_2018-10-31_2018-10-31_boxes.gpkg")
-salz_boxes = gpd.read_file(salz)
-nieder_boxes = gpd.read_file(nieder)##
-
-thresholds = np.arange(0.1, 0.9, 0.025)
-thresholds_scores = np.arange(1.25, 3, 0.025)
-n_salz = []
-scores_salz = []
-for threshold in thresholds:
-    n_salz.append(np.count_nonzero(salz_boxes["mean_spectral_probability"] > threshold))
-for threshold in thresholds_scores:
-    subset = salz_boxes[salz_boxes["mean_spectral_probability"] > threshold]
-    score = np.float32(salz_boxes["mean_spectral_probability"] + salz_boxes["mean_max_spectral_probability"] +
-                         np.max(np.array([salz_boxes["max_blue_probability"],
-                                          salz_boxes["max_green_probability"],
-                                          salz_boxes["max_red_probability"]])))
-    scores_salz.append(np.count_nonzero(score > threshold))
-n_nieder = []
-scores_nieder = []
-for threshold in thresholds:
-    n_nieder.append(np.count_nonzero(nieder_boxes["mean_spectral_probability"] > threshold))
-for threshold in thresholds_scores:
-    score = np.float32(nieder_boxes["mean_spectral_probability"] + nieder_boxes["mean_max_spectral_probability"] +
-                         np.max(np.array([nieder_boxes["max_blue_probability"],
-                                          nieder_boxes["max_green_probability"],
-                                          nieder_boxes["max_red_probability"]])))
-    scores_nieder.append(np.count_nonzero(score > threshold))
-
-plt.plot(thresholds, n_salz)
-plt.plot(thresholds, n_nieder)
-"""
-
 OSM_BUFFER = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
 
 # RF hyper parameters from hyper parameter tuning
-N_ESTIMATORS = 800
-MIN_SAMPLES_SPLIT = 5
+N_ESTIMATORS = 1600
+MIN_SAMPLES_SPLIT = 10
 MIN_SAMPLES_LEAF = 1
 MAX_FEATURES = "sqrt"
-MAX_DEPTH = 90
-BOOTSTRAP = False
+MAX_DEPTH = 20
+BOOTSTRAP = True
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.pickle")
 
@@ -126,15 +93,16 @@ class RFTruckDetector:
                                         min_samples_leaf=MIN_SAMPLES_LEAF,
                                         max_features=MAX_FEATURES,
                                         max_depth=MAX_DEPTH,
-                                        bootstrap=BOOTSTRAP)
+                                        bootstrap=BOOTSTRAP,
+                                        oob_score=True)
             self._prepare_truth()
             self._split_train_test()
             rf.fit(self.truth_variables["train"], self.truth_labels["train"])
             self.io.write_model(rf, MODEL_PATH)
-     #   test_pred = rf.predict(self.truth_variables["test"])
-      #  accuracy = metrics.accuracy_score(self.truth_labels["test"], test_pred)
-#        print("RF accuracy: %s" % accuracy)
-    #    self.variables = self._build_variables(band_stack)
+         #   test_pred = rf.predict(self.truth_variables["test"])
+         #   accuracy = metrics.accuracy_score(self.truth_labels["test"], test_pred)
+    #        print("RF accuracy: %s" % accuracy)
+        #    self.variables = self._build_variables(band_stack)
         try:
             os.remove(self.truth_path_tmp)
         except TypeError:
@@ -142,6 +110,7 @@ class RFTruckDetector:
         self.rf = rf
 
     def tune(self, tuning_path):
+        self._prepare_truth()
         self._split_train_test()
         tuning_pd = pd.DataFrame()
         n_trees = list(np.int16(np.linspace(start=200, stop=2000, num=10)))
@@ -178,20 +147,13 @@ class RFTruckDetector:
             self.lat, self.lon = self.lat[ymin:ymax], self.lon[xmin:xmax]
             self.meta["height"] = bands_rescaled.shape[1]
             self.meta["width"] = bands_rescaled.shape[2]
+            t = list(self.meta["transform"])
+            t[2], t[5] = self.lon[0], self.lat[0]
+            self.meta["transform"] = Affine(t[0], t[1], t[2], t[3], t[4], t[5])
         bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(self.meta)))
-#        osm_file = os.path.join(dirs["main"], "osm_mask.tiff")
- #       if os.path.exists(osm_file):
-  #          with rio.open(osm_file, "r") as src:
-   #             osm_mask = src.read(1)
-    #    else:
         osm_mask = self._get_osm_mask(bbox_epsg4326, self.meta["crs"], bands_rescaled[0], {"lat": self.lat,
                                                                                            "lon": self.lon},
                                       dirs["osm"])
-#            meta = self.meta.copy()
-      #      meta["count"] = 1
- #           meta["dtype"] = np.float32
-  #          with rio.open(osm_file, "w", **meta) as tgt:
-   #             tgt.write(osm_mask.astype(np.float32), 1)
         bands_rescaled *= osm_mask
         bands_rescaled[bands_rescaled == 0] = np.nan
         osm_mask = None
@@ -245,10 +207,10 @@ class RFTruckDetector:
     def _prepare_truth(self):
         truth_data = pd.read_csv(truth_path, index_col=0)
         truth_data.index, label = list(range(len(truth_data))), "background"
-        b = np.where(truth_data["label"] == "background")[0]
-        truth_data.index = list(range(len(truth_data)))
-#        for idx in np.random.choice(b, int(len(b) * 0.25), replace=False):
- #           truth_data.drop(idx, inplace=True)
+  #      b = np.where(truth_data["label"] == "background")[0]
+   #     truth_data.index = list(range(len(truth_data)))
+    #    for idx in np.random.choice(b, int(len(b) * 0.5), replace=False):
+     #       truth_data.drop(idx, inplace=True)
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
@@ -281,10 +243,11 @@ class RFTruckDetector:
         self.low_reflectance_mask += np.int8(band_stack[1] > np.nanquantile(band_stack[1], [0.25]))
         self.low_reflectance_mask += np.int8(band_stack[2] > np.nanquantile(band_stack[2], [0.25]))
         self.low_reflectance_mask[self.low_reflectance_mask >= 1] = 1
-        band_stack_normalized = band_stack.copy()
-        for band_idx in range(band_stack.shape[0]):
+        band_stack_normalized = band_stack.copy().astype(np.float32)
+        shape = band_stack_normalized.shape
+        for band_idx in range(shape[0]):
             band_stack_normalized[band_idx] /= np.nanmean(band_stack_normalized[band_idx])
-        variables = np.zeros((7, band_stack.shape[1], band_stack.shape[2]), dtype=np.float16)
+        variables = np.zeros((7, shape[1], shape[2]), dtype=np.float16)
         variables[0] = np.nanvar(band_stack_normalized[0:3], 0, dtype=np.float16)
         variables[1] = normalized_ratio(band_stack_normalized[0], band_stack_normalized[2]).astype(np.float16)  # red/blue
         variables[2] = normalized_ratio(band_stack_normalized[1], band_stack_normalized[2]).astype(np.float16)  # green/blue
@@ -298,7 +261,7 @@ class RFTruckDetector:
         with rio.open(os.path.join(dirs["main"], "test1.tiff"), "w", **meta) as tgt:
             for idx in range(variables.shape[0]):
                 tgt.write(variables[idx].astype(np.float32), idx + 1)
-        self.variables = variables
+        self.variables = variables.astype(np.float16)
 
     def _eliminate_clusters(self, arr):
         for value in [2, 3, 4]:  # eliminate large clusters of pixels
@@ -414,6 +377,8 @@ if __name__ == "__main__":
     rf_td = RFTruckDetector()
     bands = rf_td.read_bands(s2_file)
     #s = {"xmin": 0, "ymin": 3000, "xmax": 3000, "ymax": 6000}
+    if do_tuning:
+        rf_td.tune(os.path.join(dirs["main"], "training", "hyper_parameter_tuning.csv"))
     s = None
     rf_td.preprocess_bands(bands, s)
     rf_td.train()
