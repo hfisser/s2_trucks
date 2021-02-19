@@ -212,9 +212,10 @@ class Validator:
     def validate_boxes(self):
         tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
         try:
-            boxes_validation_pd = pd.read_csv(boxes_validation_file)
+            os.remove(boxes_validation_file)
         except FileNotFoundError:
-            boxes_validation_pd = pd.DataFrame()
+            pass
+        boxes_validation_pd = pd.DataFrame()
         tiles = list(tiles_pd["validation_tiles"])
         for tile in tiles:
             print(tile)
@@ -241,11 +242,13 @@ class Validator:
             prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes")
             rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(self.dirs["detections"], name + "_raster"))
             rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
-           # prediction_boxes_clipped = gpd.clip(prediction_boxes, box(extent[0], extent[1], extent[2], extent[3]))
             producer_n, user_n = 0, 0
+            percentage_intersection = []
             for prediction_box in prediction_boxes.geometry:
                 for validation_box in validation_boxes.geometry:
                     if prediction_box.intersects(validation_box):
+                        difference = prediction_box.difference(validation_box)
+                        percentage_intersection.append((prediction_box.area - difference.area) / prediction_box.area)
                         producer_n += 1
                         break
             for validation_box in validation_boxes.geometry:
@@ -260,7 +263,8 @@ class Validator:
             boxes_validation_pd.loc[row_idx, "user_percentage"] = user_n / len(validation_boxes) * 100
             boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes)
             boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
-            boxes_validation_pd.to_csv(boxes_validation_file)
+            boxes_validation_pd.loc[row_idx, "mean_area_intersection"] = np.mean(percentage_intersection)
+        boxes_validation_pd.to_csv(boxes_validation_file)
 
     @staticmethod
     def get_station_meta(bast_station_name):
