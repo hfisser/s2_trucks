@@ -99,7 +99,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
     #        spectra_ml.drop(row, inplace=True)
     #    spectra_ml.index = range(len(spectra_ml))
-    spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, n_retain)
+    spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, int(n_retain))
     spectra_ml.to_csv(spectra_ml_csv)
 
 
@@ -226,10 +226,10 @@ def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means):
         t.loc[row_idx, "blue"] = stack[2]
         t.loc[row_idx, "nir"] = stack[3]
         t.loc[row_idx, "ndvi"] = ndvi[y, x]
-        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack, 0)
-        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack, 0)
-        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
-        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized, 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized, 0)
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack_normalized[0], stack_normalized[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack_normalized[1], stack_normalized[2])
         t.loc[row_idx, "red_normalized"] = stack_normalized[0]
         t.loc[row_idx, "green_normalized"] = stack_normalized[1]
         t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
@@ -263,14 +263,14 @@ def add_background(t, reflectances, ratios, means, n_background):
         t.loc[row_idx, "blue"] = stack[2]
         t.loc[row_idx, "nir"] = stack[3]
         t.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
-        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack[0:3], 0)
-        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack[0:3], 0)
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized[0:3], 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized[0:3], 0)
         t.loc[row_idx, "red_normalized"] = stack_normalized[0]
         t.loc[row_idx, "green_normalized"] = stack_normalized[1]
         t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
         t.loc[row_idx, "nir_normalized"] = stack_normalized[3]
-        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
-        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack_normalized[0], stack_normalized[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack_normalized[1], stack_normalized[2])
         t.loc[row_idx, "red_global_mean"] = means[0]
         t.loc[row_idx, "green_global_mean"] = means[1]
         t.loc[row_idx, "blue_global_mean"] = means[2]
