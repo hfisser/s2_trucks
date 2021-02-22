@@ -219,29 +219,35 @@ class Validator:
         tiles = list(tiles_pd["validation_tiles"])
         for tile in tiles:
             print(tile)
-            imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
+            try:
+                imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
+            except TypeError:  # nan
+                continue
             lens = np.int32([len(x) for x in imgs])
             img_file = imgs[np.where(lens == lens.max())[0]][0]
-            # detect on whole array
-            rf_td = RFTruckDetector()
-            band_data = rf_td.read_bands(img_file)
-            lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
+            name = os.path.basename(img_file).split(".tif")[0]
             # read labels
             validation_boxes = gpd.read_file(os.path.join(dir_labels,
                                                           os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
-            extent = validation_boxes.total_bounds  # process only subset where boxes given
-            diff_ymin, diff_ymax = np.abs(lat - extent[3]), np.abs(lat - extent[1])
-            diff_xmin, diff_xmax = np.abs(lon - extent[0]), np.abs(lon - extent[2])
-            ymin, ymax = np.argmin(diff_ymin), np.argmin(diff_ymax)
-            xmin, xmax = np.argmin(diff_xmin), np.argmin(diff_xmax)
-            rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax + 1, "xmax": xmax + 1})
-            rf_td.train()
-            prediction_array = rf_td.predict()
-            prediction_boxes = rf_td.extract_objects(prediction_array)
-            name = os.path.basename(img_file).split(".tif")[0]
             prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes")
-            rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(self.dirs["detections"], name + "_raster"))
-            rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
+            try:
+                prediction_boxes = gpd.read_file(prediction_boxes_file)  # read if yet processed
+            except DriverError:
+                # detect on whole array
+                rf_td = RFTruckDetector()
+                band_data = rf_td.read_bands(img_file)
+                lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
+                extent = validation_boxes.total_bounds  # process only subset where boxes given
+                diff_ymin, diff_ymax = np.abs(lat - extent[3]), np.abs(lat - extent[1])
+                diff_xmin, diff_xmax = np.abs(lon - extent[0]), np.abs(lon - extent[2])
+                ymin, ymax = np.argmin(diff_ymin), np.argmin(diff_ymax)
+                xmin, xmax = np.argmin(diff_xmin), np.argmin(diff_xmax)
+                rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax + 1, "xmax": xmax + 1})
+                rf_td.train()
+                prediction_array = rf_td.predict()
+                prediction_boxes = rf_td.extract_objects(prediction_array)
+                rf_td.prediction_raster_to_gtiff(prediction_array, os.path.join(self.dirs["detections"], name + "_raster"))
+                rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
             producer_n, user_n = 0, 0
             percentage_intersection = []
             for prediction_box in prediction_boxes.geometry:
