@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
-from detect_trucks.ObjectDelineator import ObjectExtractor
+from detect_trucks.ObjectExtractor import ObjectExtractor
 from detect_trucks.IO import IO
 from array_utils.math import rescale, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
@@ -113,9 +113,9 @@ class RFTruckDetector:
         self._prepare_truth()
         self._split_train_test()
         tuning_pd = pd.DataFrame()
-        n_trees = list(np.int16(np.linspace(start=200, stop=2000, num=10)))
+        n_trees = list(np.int16(np.linspace(start=200, stop=2000, num=20)))
         max_features = ["auto", "sqrt"]
-        max_depth = list(np.int16(np.linspace(10, 110, num=11)))
+        max_depth = list(np.int16(np.linspace(10, 150, num=15)))
         max_depth.append(None)
         min_samples_split = [2, 5, 10]
         min_samples_leaf = [1, 2, 4]
@@ -127,7 +127,7 @@ class RFTruckDetector:
                        "min_samples_leaf": min_samples_leaf,
                        "bootstrap": bootstrap}
         rf = RandomForestClassifier()
-        rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper, n_iter=100, cv=3, verbose=2,
+        rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper, n_iter=200, cv=3, verbose=2,
                                        random_state=42, n_jobs=-1)
         rf_random.fit(self.truth_variables["train"], self.truth_labels["train"])
         for key, value in rf_random.best_params_.items():
@@ -192,14 +192,8 @@ class RFTruckDetector:
 
     def extract_objects(self, predictions_arr):
         print("Extracting objects")
- #       with rio.open("C:\\Users\\Lenovo\\Downloads\\test100.tif", "r") as src:
-  #          predictions_arr = src.read(1).astype(np.int8)
-   #     with rio.open("C:\\Users\\Lenovo\\Downloads\\test101.tif", "r") as src:
-    #        self.probabilities = np.zeros((4, predictions_arr.shape[0], predictions_arr.shape[1]))
-     #       for i in range(src.count):
-      #          self.probabilities[i] = src.read(i + 1)
         extractor = ObjectExtractor(self)
-        out_gpd = extractor.delineate(predictions_arr)
+        out_gpd = extractor.extract(predictions_arr)
         self._elapsed(self.t0)
         print("-" * 20)
         return out_gpd
@@ -334,14 +328,19 @@ class RFTruckDetector:
 
     @staticmethod
     def calc_vector_direction_in_degree(vector):
+        """
+        :param vector: array-like y, x
+        :return:
+        """
         # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
-        y_offset, x_offset = 90 if vector[0] > 0 else 0, 90 if vector[1] < 0 else 0
-        offset = 180 if y_offset == 0 and x_offset == 90 else 0
+        offset = 180 if all([value < 0 for value in vector]) or vector[1] < 0 else 0
+        offset = 90 if all([vector[0] < 0, vector[1] > 0]) else offset
+        offset += 90 if all([vector[0] > 0, vector[1] < 0]) else 0
         if vector[0] == 0:
             direction = 0.
         else:
             direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
-        direction += offset + y_offset + x_offset
+        direction += offset
         return direction
 
     @staticmethod
