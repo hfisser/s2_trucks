@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 import geopandas as gpd
 import pandas as pd
@@ -29,6 +30,7 @@ dir_validation = os.path.join(dir_main, "validation")
 dir_validation_data = os.path.join(dir_validation, "data", "s2", "archive")
 dir_comparison_s5p = os.path.join(dir_comparison, "OUT_S5P")
 dir_comparison_insitu = os.path.join(dir_comparison, "OUT_Insitu")
+dir_comparison_wind = os.path.join(dir_comparison, "OUT_Wind")
 dir_validation = os.path.join(dir_main, "validation")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
@@ -105,6 +107,33 @@ class Comparison:
                 self.compare_s5p_no2(detections_file, comparison_raster_file, comparison_variable, "-".join([y, m, d]))
         self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
 
+    def plot_s2_series(self):
+        weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
+                    "2018-07-24": "Tuesday", "2018-08-03": "Friday", "2018-08-23": "Thursday",
+                    "2018-09-19": "Wednesday", "2018-10-12": "Friday", "2018-04-10": "Tuesday",
+                    "2018-04-20": "Friday", "2018-05-07": "Monday", "2018-05-20": "Sunday"}
+        detection_files = glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg"))
+        dates, n_detections = [], []
+        for detection_file in detection_files:
+            str_split = detection_file.split("_")
+            date = "-".join([str_split[-2], str_split[-3], str_split[-4]])
+            dates.append(date)
+            n_detections.append(len(gpd.read_file(detection_file)))
+        date_sort = np.argsort(dates)
+        dates, n_detections = np.array(dates)[date_sort], np.int16(n_detections)[date_sort]
+        dates = [date + " (%s)" % weekdays[date] for date in dates]
+        plt.close()
+        plt.plot_date(dates, n_detections, xdate=True, color="#7b0c7c", alpha=0.8)
+        plt.ylabel("Detected trucks")
+        plt.title("Number of detected trucks Sentinel-2")
+        plt.xticks(rotation=90)
+        plt.subplots_adjust(bottom=0.4)
+        plt.axes().xaxis.set_tick_params(labelsize=8)
+        plt.axes().yaxis.set_tick_params(labelsize=8)
+        plt.savefig(os.path.join(dir_comparison_plots, "s2_detections_series.png"))
+        plt.close()
+        self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
+
     @staticmethod
     def compare_insitu_no2(detection_files):
         crs = gpd.read_file(detection_files[0]).crs
@@ -159,6 +188,7 @@ class Comparison:
         :param detections_file: str file path to detections
         :param raster_file: str file path of raster
         :param raster_variable_name: str name of the variable in the netcdf
+        :param date_of_interest: str date
         :return:
         """
         # load Sentinel-5P tiles and rasterize detections on that grid
@@ -170,8 +200,8 @@ class Comparison:
         diff_lon_crop_lon = np.abs(lon - lon_crop)
         crop_idx = np.where(diff_lon_crop_lon == np.min(diff_lon_crop_lon))[0][0] + 1
         lon = lon[crop_idx:]  # crop lon
-        lat_resolution = np.mean(lat[1:] - lat[0:-1])
-        lon_resolution = np.mean(lon[1:] - lon[0:-1])
+        lat_resolution = np.mean(lat[1:] - lat[:-1])
+        lon_resolution = np.mean(lon[1:] - lon[:-1])
         box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
         comparison_array = reference_array[raster_variable_name].values[:, crop_idx:]
         s2_trucks_array = np.zeros_like(comparison_array)
@@ -200,45 +230,36 @@ class Comparison:
         with rio.open(detections_raster_file, "w", **meta) as tgt:
             tgt.write(s2_trucks_array, 1)
         # plot detections vs. comparison array
-        s2_array_flat, comparison_array_flat = s2_trucks_array.flatten(), comparison_array.flatten()
-        comparison_array_flat = comparison_array_flat[s2_array_flat > 0]
-        s2_array_flat = s2_array_flat[s2_array_flat > 0]
-        plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
-        folder = os.path.dirname(raster_file).split(os.sep)[-1]
-        comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
-        plt.ylabel("S2 trucks")
-        plt.xlabel(comparison_name)
-        plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
-        plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_vs_%s.png" %
-                                 detections_basename.split(".gpkg")[0]))
-        plt.close()
+        s2_trucks_flat, comparison_flat = s2_trucks_array.flatten(), comparison_array.flatten()
+        comparison_flat = comparison_flat[s2_trucks_flat > 0]
+        s2_trucks_flat = s2_trucks_flat[s2_trucks_flat > 0]
+        for wind_direction in [1,2,3]:
+            wind_name = "wind%s.pickle" % wind_direction  # list pickle with values of this wind direction
+            comparison_wind_file = os.path.join(dir_comparison_s5p, wind_name)
+            s2_wind_file = os.path.join(dir_comparison_detections_boxes, wind_name)
+            comparison_wind = pickle.load(open(comparison_wind_file, "rb"))
+            s2_wind = pickle.load(open(s2_wind_file, "rb"))
+            # filter by wind direction
+            ys, xs = np.where(comparison_array == wind_direction)
+            for y, x in zip(ys, xs):
+                comparison_wind.append(comparison_array[y, x])
+                s2_wind.append(s2_trucks_array[y, x])
+            pickle.dump(comparison_wind, open(comparison_wind_file, "wb"))
+            pickle.dump(s2_wind, open(s2_wind_file, "wb"))
 
-    def plot_s2_series(self):
-        weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
-                    "2018-07-24": "Tuesday", "2018-08-03": "Friday", "2018-08-23": "Thursday",
-                    "2018-09-19": "Wednesday", "2018-10-12": "Friday", "2018-04-10": "Tuesday",
-                    "2018-04-20": "Friday", "2018-05-07": "Monday", "2018-05-20": "Sunday"}
-        detection_files = glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg"))
-        dates, n_detections = [], []
-        for detection_file in detection_files:
-            str_split = detection_file.split("_")
-            date = "-".join([str_split[-2], str_split[-3], str_split[-4]])
-            dates.append(date)
-            n_detections.append(len(gpd.read_file(detection_file)))
-        date_sort = np.argsort(dates)
-        dates, n_detections = np.array(dates)[date_sort], np.int16(n_detections)[date_sort]
-        dates = [date + " (%s)" % weekdays[date] for date in dates]
-        plt.close()
-        plt.plot_date(dates, n_detections, xdate=True, color="#7b0c7c", alpha=0.8)
-        plt.ylabel("Detected trucks")
-        plt.title("Number of detected trucks Sentinel-2")
-        plt.xticks(rotation=90)
-        plt.subplots_adjust(bottom=0.4)
-        plt.axes().xaxis.set_tick_params(labelsize=8)
-        plt.axes().yaxis.set_tick_params(labelsize=8)
-        plt.savefig(os.path.join(dir_comparison_plots, "s2_detections_series.png"))
-        plt.close()
-        self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
+#            plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
+ #           folder = os.path.dirname(raster_file).split(os.sep)[-1]
+  #          comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
+   #         plt.ylabel("S2 trucks")
+    #        plt.xlabel(comparison_name)
+     #       plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
+      #      plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_vs_%s.png" %
+       #                              detections_basename.split(".gpkg")[0]))
+        #    plt.close()
+
+    @staticmethod
+    def calc_wind_direction():
+
 
     @staticmethod
     def compare_station_counts(detection_files, dates):
