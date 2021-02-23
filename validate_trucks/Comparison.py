@@ -134,6 +134,83 @@ class Comparison:
         plt.close()
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
+    def compare_s5p_no2(self, detections_file, raster_file, raster_variable_name, date_of_interest):
+        """
+        reads detections and raster tiles, number of detections in each cell is compared with n detections
+        :param detections_file: str file path to detections
+        :param raster_file: str file path of raster
+        :param raster_variable_name: str name of the variable in the netcdf
+        :param date_of_interest: str date
+        :return:
+        """
+        # load Sentinel-5P tiles and rasterize detections on that grid
+        detections = gpd.read_file(detections_file)
+        detections_basename = os.path.basename(detections_file)
+        detections = detections.to_crs("EPSG:4326")  # because rasters are given as 4326
+        reference_array = xr.open_dataset(raster_file)
+        lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
+        diff_lon_crop_lon = np.abs(lon - lon_crop)
+        crop_idx = np.where(diff_lon_crop_lon == np.min(diff_lon_crop_lon))[0][0] + 1
+        lon = lon[crop_idx:]  # crop lon
+        lat_resolution = np.mean(lat[1:] - lat[:-1])
+        lon_resolution = np.mean(lon[1:] - lon[:-1])
+        box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
+        comparison_array = reference_array[raster_variable_name].values[:, crop_idx:]
+        s2_trucks_array = np.zeros_like(comparison_array)
+        # iterate over cells and count number of s2 trucks
+        for y in range(s2_trucks_array.shape[0]):
+            for x in range(s2_trucks_array.shape[1]):
+                ymin, xmin = lat[y], lon[x]
+                try:
+                    ymax = lat[y + 1]
+                except IndexError:
+                    ymax = lat[y] + lat_resolution
+                try:
+                    xmax = lon[x + 1]
+                except IndexError:
+                    xmax = lon[x] + lon_resolution
+                cell_box_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[box(xmin, ymin, xmax, ymax)],
+                                                crs=detections.crs)  # raster cell as box, count boxes within
+                s2_trucks_array[y, x] = len(gpd.clip(detections, cell_box_gpd))  # number of detections in cell
+        detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + box_str +
+                                              "reference%s.tiff" % raster_variable_name)
+        # trucks raster to gtiff
+        meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
+                    width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
+        meta["transform"] = rio.transform.from_bounds(np.min(lon), np.min(lat), np.max(lon), np.max(lat), len(lon),
+                                                      len(lat))
+        with rio.open(detections_raster_file, "w", **meta) as tgt:
+            tgt.write(s2_trucks_array, 1)
+        # plot detections vs. comparison array
+        comparison_array[s2_trucks_array == 0] = np.nan
+        s2_trucks_array[s2_trucks_array == 0] = np.nan
+        wind = xr.open_dataset(
+            os.path.join(dir_comparison_wind, "Wind_U_V_%s.nc" % date_of_interest.replace("-", "")))
+        wind_direction = self.calc_wind_direction(wind)
+        for wind_direction in [1, 2, 3]:
+            wind_name = "wind%s.pickle" % wind_direction  # list pickle with values of this wind direction
+            comparison_wind_file = os.path.join(dir_comparison_s5p, wind_name)
+            s2_wind_file = os.path.join(dir_comparison_detections_boxes, wind_name)
+            comparison_wind = pickle.load(open(comparison_wind_file, "rb"))
+            s2_wind = pickle.load(open(s2_wind_file, "rb"))
+            # filter by wind direction
+            ys, xs = np.where(comparison_array == wind_direction)
+            for y, x in zip(ys, xs):
+                comparison_wind.append(comparison_array[y, x])
+                s2_wind.append(s2_trucks_array[y, x])
+            pickle.dump(comparison_wind, open(comparison_wind_file, "wb"))
+            pickle.dump(s2_wind, open(s2_wind_file, "wb"))
+
+#            plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
+#           folder = os.path.dirname(raster_file).split(os.sep)[-1]
+#          comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
+#         plt.ylabel("S2 trucks")
+#        plt.xlabel(comparison_name)
+#       plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
+#      plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_vs_%s.png" %
+#                              detections_basename.split(".gpkg")[0]))
+#    plt.close()
+
     @staticmethod
     def compare_insitu_no2(detection_files):
         crs = gpd.read_file(detection_files[0]).crs
@@ -182,84 +259,21 @@ class Comparison:
             plt.close()
 
     @staticmethod
-    def compare_s5p_no2(detections_file, raster_file, raster_variable_name, date_of_interest):
-        """
-        reads detections and raster tiles, number of detections in each cell is compared with n detections
-        :param detections_file: str file path to detections
-        :param raster_file: str file path of raster
-        :param raster_variable_name: str name of the variable in the netcdf
-        :param date_of_interest: str date
-        :return:
-        """
-        # load Sentinel-5P tiles and rasterize detections on that grid
-        detections = gpd.read_file(detections_file)
-        detections_basename = os.path.basename(detections_file)
-        detections = detections.to_crs("EPSG:4326")  # because rasters are given as 4326
-        reference_array = xr.open_dataset(raster_file)
-        lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
-        diff_lon_crop_lon = np.abs(lon - lon_crop)
-        crop_idx = np.where(diff_lon_crop_lon == np.min(diff_lon_crop_lon))[0][0] + 1
-        lon = lon[crop_idx:]  # crop lon
-        lat_resolution = np.mean(lat[1:] - lat[:-1])
-        lon_resolution = np.mean(lon[1:] - lon[:-1])
-        box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
-        comparison_array = reference_array[raster_variable_name].values[:, crop_idx:]
-        s2_trucks_array = np.zeros_like(comparison_array)
-        # iterate over cells and count number of s2 trucks
-        for y in range(s2_trucks_array.shape[0]):
-            for x in range(s2_trucks_array.shape[1]):
-                ymin, xmin = lat[y], lon[x]
-                try:
-                    ymax = lat[y + 1]
-                except IndexError:
-                    ymax = lat[y] + lat_resolution
-                try:
-                    xmax = lon[x + 1]
-                except IndexError:
-                    xmax = lon[x] + lon_resolution
-                cell_box_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[box(xmin, ymin, xmax, ymax)],
-                                                crs=detections.crs)  # raster cell as box, count boxes within
-                s2_trucks_array[y, x] = len(gpd.clip(detections, cell_box_gpd))  # number of detections in cell
-        detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + box_str +
-                                              "reference%s.tiff" % raster_variable_name)
-        # trucks raster to gtiff
-        meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
-                    width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
-        meta["transform"] = rio.transform.from_bounds(np.min(lon), np.min(lat), np.max(lon), np.max(lat), len(lon),
-                                                      len(lat))
-        with rio.open(detections_raster_file, "w", **meta) as tgt:
-            tgt.write(s2_trucks_array, 1)
-        # plot detections vs. comparison array
-        s2_trucks_flat, comparison_flat = s2_trucks_array.flatten(), comparison_array.flatten()
-        comparison_flat = comparison_flat[s2_trucks_flat > 0]
-        s2_trucks_flat = s2_trucks_flat[s2_trucks_flat > 0]
-        for wind_direction in [1,2,3]:
-            wind_name = "wind%s.pickle" % wind_direction  # list pickle with values of this wind direction
-            comparison_wind_file = os.path.join(dir_comparison_s5p, wind_name)
-            s2_wind_file = os.path.join(dir_comparison_detections_boxes, wind_name)
-            comparison_wind = pickle.load(open(comparison_wind_file, "rb"))
-            s2_wind = pickle.load(open(s2_wind_file, "rb"))
-            # filter by wind direction
-            ys, xs = np.where(comparison_array == wind_direction)
-            for y, x in zip(ys, xs):
-                comparison_wind.append(comparison_array[y, x])
-                s2_wind.append(s2_trucks_array[y, x])
-            pickle.dump(comparison_wind, open(comparison_wind_file, "wb"))
-            pickle.dump(s2_wind, open(s2_wind_file, "wb"))
-
-#            plt.scatter(comparison_array_flat, s2_array_flat)  # xy of flat arrays
- #           folder = os.path.dirname(raster_file).split(os.sep)[-1]
-  #          comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
-   #         plt.ylabel("S2 trucks")
-    #        plt.xlabel(comparison_name)
-     #       plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
-      #      plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_vs_%s.png" %
-       #                              detections_basename.split(".gpkg")[0]))
-        #    plt.close()
-
-    @staticmethod
-    def calc_wind_direction():
-
+    def calc_wind_direction(wind_xr):
+        v_wind, u_wind = wind_xr.MeridionalWind.values, wind_xr.ZonalWind.values
+        wind_direction = np.zeros_like(wind_xr.ZonalWind.values)
+        for y in range(wind_direction.shape[0]):
+            for x in range(wind_direction.shape[1]):
+                vector = [v_wind[y, x], u_wind[y, x]]
+                offset = 180 if all([value < 0 for value in vector]) or vector[1] < 0 else 0
+                offset = 90 if all([vector[0] < 0, vector[1] > 0]) else offset
+                offset += 90 if all([vector[0] > 0, vector[1] < 0]) else 0
+                if vector[0] == 0:
+                    direction = 0.
+                else:
+                    direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
+                wind_direction[y, x] = direction + offset
+        return wind_direction
 
     @staticmethod
     def compare_station_counts(detection_files, dates):
