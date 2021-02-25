@@ -26,7 +26,18 @@ class SentinelHub:
             self.sh_config.sh_client_id = content.split("SH_CLIENT_ID = ")[1].split("\n")[0]
             self.sh_config.sh_client_secret = content.split("SH_CLIENT_SECRET = ")[1].split("\n")[0]
 
-    def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None, merged_file=None):
+    def get_data(self, bbox, period, dataset, bands, resolution, dir_save=None, merged_file=None, mosaicking_order=None):
+        """
+        :param bbox: array-like with four coordinates xmin, ymin, xmax, ymax
+        :param period: array-like with two dates
+        :param dataset: DataCollection instance
+        :param bands: array-like with bands str
+        :param resolution: float specifies the resolution
+        :param dir_save: str directory
+        :param merged_file: str file path of merged file
+        :param mosaicking_order: str mosaicking order, e.g. "leastCC"
+        :return:
+        """
         if len(period[0].split("-")[0]) == 2:
             period = ["-".join([date[-4:], date[3:5], date[0:2]]) for date in period]
         if merged_file is not None and os.path.exists(merged_file):
@@ -38,15 +49,21 @@ class SentinelHub:
         else:
             splitted_box = self.split_box(bbox, resolution)
             if len(splitted_box) > 1:
-                return self.get_data_large_aoi(splitted_box, period, dataset, bands, resolution, dir_save, merged_file)
+                return self.get_data_large_aoi(splitted_box, period, dataset, bands, resolution, dir_save, merged_file,
+                                               mosaicking_order)
             else:
-                sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution)
+                sh_request_builder = RequestBuilder(bbox, period, dataset, bands, resolution, mosaicking_order)
                 request = sh_request_builder.request(self.sh_config, dir_save)
                 data = request.get_data(save_data=dir_save is not None)[0]
-                print("Retrieved data of shape: %s" % str(data[0].shape))
-                return data, request.data_folder
+                d = request.data_folder
+                # change dtype
+                folder = list(set(glob(os.path.join(d, "*"))) - set(glob(os.path.join(d, "*.tiff"))))[0]
+                self.change_tiff_dtype(glob(os.path.join(folder, "*.tiff"))[0], np.float32)
+                print("Retrieved data of shape: %s" % str(data.shape))
+                return data, d
 
-    def get_data_large_aoi(self, splitted_box, period, dataset, bands, resolution, dir_save, merged_file):
+    def get_data_large_aoi(self, splitted_box, period, dataset, bands, resolution, dir_save, merged_file,
+                           mosaicking_order):
         dir_save_tmp = os.path.join(dir_save, "tmp")
         files = []
         for i, bbox in enumerate(splitted_box):
@@ -63,7 +80,8 @@ class SentinelHub:
             elif os.path.exists(curr_s2_data_file):
                 pass
             else:
-                band_stack, dir_out = self.get_data(bbox, period, dataset, bands, resolution, dir_save_tmp)
+                band_stack, dir_out = self.get_data(bbox, period, dataset, bands, resolution, dir_save_tmp, None,
+                                                    mosaicking_order)
                 folders = list(set(glob(os.path.join(dir_out, "*"))) - set(glob(os.path.join(dir_out, "*.tiff"))))
                 if len(folders) > 1:
                     print("Several files, don't know which to read from %s" % dir_save)
@@ -79,6 +97,10 @@ class SentinelHub:
         with rio.open(files[0], "r") as src:
             meta = src.meta  # get meta
         merged_stack, transform = merge(files)
+        if np.count_nonzero(merged_stack[0]) == 0:
+            for f in files:
+                os.remove(f)
+            return merged_stack, os.path.dirname(merged_file)
         meta = dict(transform=transform, height=merged_stack.shape[1], width=merged_stack.shape[2],
                     count=merged_stack.shape[0], driver="GTiff", dtype=merged_stack.dtype,
                     crs=meta["crs"])
@@ -106,16 +128,43 @@ class SentinelHub:
         lower_right_utm = utm.from_latlon(bbox_epsg4326[1], bbox_epsg4326[2], upper_left_utm[2])  # same zone number
         size_y = abs(int(np.round((upper_left_utm[1] - lower_right_utm[1]) / res, 2)))
         size_x = abs(int(np.round((lower_right_utm[0] - upper_left_utm[0]) / res, 2)))
-        if size_y < 2500 and size_x < 2500:
-            return [bbox_epsg4326]
-        else:
-            # split into several boxes
-            hemisphere = "N" if bbox_epsg4326[3] >= 0 else "S"
-            bbox_utm = Polygon(box(upper_left_utm[0], lower_right_utm[1], lower_right_utm[0], upper_left_utm[1]))
-            crs = CRS["UTM_" + str(upper_left_utm[2]) + hemisphere]  # use UTM
-            bbox_splitter = BBoxSplitter([bbox_utm], crs, (int(size_x / 2499) + 1, int(size_y / 2499) + 1),
-                                         reduce_bbox_sizes=True)
-            return bbox_splitter.get_bbox_list()
+        # split into several boxes
+        hemisphere = "N" if bbox_epsg4326[3] >= 0 else "S"
+        bbox_utm = Polygon(box(upper_left_utm[0], lower_right_utm[1], lower_right_utm[0], upper_left_utm[1]))
+        crs = CRS["UTM_" + str(upper_left_utm[2]) + hemisphere]  # use UTM
+        bbox_splitter = BBoxSplitter([bbox_utm], crs, (int(size_x / 2400) + 1, int(size_y / 2400) + 1),
+                                     reduce_bbox_sizes=True)
+        return bbox_splitter.get_bbox_list()
+
+    @staticmethod
+    def change_tiff_dtype(file, dtype):
+        with rio.open(file, "r") as src:
+            meta, data = src.meta, np.zeros((src.count, src.height, src.width), dtype=dtype)
+            for band_idx in range(data.shape[0]):
+                data[band_idx] = src.read(band_idx + 1).astype(dtype)
+        meta["dtype"] = data.dtype
+        with rio.open(file, "w", **meta) as tgt:
+            for band_idx in range(meta["count"]):
+                tgt.write(data[band_idx], band_idx + 1)
+
+    def data_available(self, request_kwargs):
+        kwargs = request_kwargs.copy()
+        bbox_copy = kwargs["bbox"].copy()
+        lon_extent, lat_extent = np.abs(bbox_copy[0] - bbox_copy[2]), np.abs(bbox_copy[1] - bbox_copy[3])
+        # strongly crop bbox to very small aoi in order to only get test pixels
+        bbox_copy[0] += lon_extent * 0.49
+        bbox_copy[1] += lat_extent * 0.4999
+        bbox_copy[2] -= lon_extent * 0.49
+        bbox_copy[3] -= lat_extent * 0.4999
+        kwargs["bbox"] = self.split_box(bbox_copy, kwargs["resolution"])[0]
+        kwargs["bands"] = ["B02"]
+        kwargs["merged_file"] = os.path.join(os.path.dirname(kwargs["merged_file"]), "test.tiff")
+        test_data, folder = self.get_data(**kwargs)
+        try:
+            shutil.rmtree(glob(os.path.join(folder, "*"))[0])
+        except IndexError:
+            pass
+        return np.count_nonzero(test_data) > 0
 
 
 if __name__ == "__main__":
