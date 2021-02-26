@@ -57,7 +57,7 @@ class SentinelHub:
                 data = request.get_data(save_data=dir_save is not None)[0]
                 d = request.data_folder
                 # change dtype
-                folder = list(set(glob(os.path.join(d, "*"))) - set(glob(os.path.join(d, "*.tiff"))))[0]
+                folder = self.list_non_tiffs(d)[0]
                 self.change_tiff_dtype(glob(os.path.join(folder, "*.tiff"))[0], np.float32)
                 print("Retrieved data of shape: %s" % str(data.shape))
                 return data, d
@@ -113,28 +113,44 @@ class SentinelHub:
             shutil.rmtree(dir_save_tmp)
         return merged_stack, os.path.dirname(merged_file)
 
-    @staticmethod
-    def split_box(bbox_epsg4326, res):
+    def split_box(self, bbox_epsg4326, res):
         """
         splits WGS84 box coordinates into as many boxes as needed for Sentinel Hub
         :param bbox_epsg4326: list or tuple of length 4 with xmin, ymin, xmax, ymax
         :param res: float spatial resolution
-        :return: list of Bbox instances
+        :return: list of Bbox instances in UTM
         """
         try:
             upper_left_utm = utm.from_latlon(bbox_epsg4326[3], bbox_epsg4326[0])
         except TypeError:  # is already of class Bbox
             return [bbox_epsg4326]
         lower_right_utm = utm.from_latlon(bbox_epsg4326[1], bbox_epsg4326[2], upper_left_utm[2])  # same zone number
-        size_y = abs(int(np.round((upper_left_utm[1] - lower_right_utm[1]) / res, 2)))
-        size_x = abs(int(np.round((lower_right_utm[0] - upper_left_utm[0]) / res, 2)))
+        sizes = self.calc_bbox_size(upper_left_utm, lower_right_utm, res)
         # split into several boxes
         hemisphere = "N" if bbox_epsg4326[3] >= 0 else "S"
         bbox_utm = Polygon(box(upper_left_utm[0], lower_right_utm[1], lower_right_utm[0], upper_left_utm[1]))
         crs = CRS["UTM_" + str(upper_left_utm[2]) + hemisphere]  # use UTM
-        bbox_splitter = BBoxSplitter([bbox_utm], crs, (int(size_x / 2400) + 1, int(size_y / 2400) + 1),
-                                     reduce_bbox_sizes=True)
+        y = int(np.clip(np.round(sizes["x"] / 2400 + 0.5), 1, np.inf))  # + 0.5 in order to ensure rounding upwards
+        x = int(np.clip(np.round(sizes["y"] / 2400 + 0.5), 1, np.inf))
+        bbox_splitter = BBoxSplitter([bbox_utm], crs, (y, x), reduce_bbox_sizes=True)
         return bbox_splitter.get_bbox_list()
+
+    def split_large_polygon_epsg4326(self, polygon_epsg4326, res):
+        bounds = polygon_epsg4326.bounds
+        x_size, y_size = abs(bounds[0] - bounds[2]) * 111000, abs(bounds[1] - bounds[3]) * 111000  # meters
+        x_nboxes, y_nboxes = int((x_size / res) / 2400), int((y_size / res) / 2400)  # 2400 max. n pixels
+        bbox_splitter = BBoxSplitter([polygon_epsg4326], CRS.WGS84, (x_nboxes, y_nboxes), reduce_bbox_sizes=True)
+        return bbox_splitter.get_bbox_list()
+
+    @staticmethod
+    def list_non_tiffs(d):
+        return list(set(glob(os.path.join(d, "*"))) - set(glob(os.path.join(d, "*.tiff"))))
+
+    @staticmethod
+    def calc_bbox_size(ul_utm, lr_utm, res):
+        size_y = abs(int(np.round((ul_utm[1] - lr_utm[1]) / res, 2)))
+        size_x = abs(int(np.round((lr_utm[0] - ul_utm[0]) / res, 2)))
+        return {"y": size_y, "x": size_x}
 
     @staticmethod
     def change_tiff_dtype(file, dtype):
@@ -152,16 +168,16 @@ class SentinelHub:
         bbox_copy = kwargs["bbox"].copy()
         lon_extent, lat_extent = np.abs(bbox_copy[0] - bbox_copy[2]), np.abs(bbox_copy[1] - bbox_copy[3])
         # strongly crop bbox to very small aoi in order to only get test pixels
-        bbox_copy[0] += lon_extent * 0.49
+        bbox_copy[0] += lon_extent * 0.499
         bbox_copy[1] += lat_extent * 0.4999
-        bbox_copy[2] -= lon_extent * 0.49
+        bbox_copy[2] -= lon_extent * 0.499
         bbox_copy[3] -= lat_extent * 0.4999
         kwargs["bbox"] = self.split_box(bbox_copy, kwargs["resolution"])[0]
         kwargs["bands"] = ["B02"]
         kwargs["merged_file"] = os.path.join(os.path.dirname(kwargs["merged_file"]), "test.tiff")
-        test_data, folder = self.get_data(**kwargs)
+        test_data, d = self.get_data(**kwargs)
         try:
-            shutil.rmtree(glob(os.path.join(folder, "*"))[0])
+            shutil.rmtree(self.list_non_tiffs(d)[0])
         except IndexError:
             pass
         return np.count_nonzero(test_data) > 0
