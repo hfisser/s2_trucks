@@ -64,54 +64,42 @@ uba_station_buffer = 10000  # meters
 
 
 class Comparison:
-    def __init__(self, dates, aoi_file):
+    def __init__(self, dates, aoi_file_path):
         self.dates = dates
-        self.bbox = gpd.read_file(aoi_file).to_crs("EPSG:4326").geometry.bounds
+        self.bbox = gpd.read_file(aoi_file_path).to_crs("EPSG:4326").geometry.bounds
 
     def run_comparison(self):
-        for comparison_variable in comparison_variables:
-            file_prefix = {"var_mod_NO2_AK_coulumn": "test_tropomi_NO2_",
-                           "var_VCDtropo": "test_tropomi_NO2_"}[comparison_variable]
-            dir_target = [dir_comparison_s5p, dir_comparison_s5p][int("NO2" in file_prefix)]
-            wind_bins_low = np.arange(0, 360, 45, dtype=np.float32)
-            wind_bins_up = np.arange(45, 361, 45, dtype=np.float32)
-            wind_dict = {"bins_low": wind_bins_low, "bins_up": wind_bins_up,
-                         "comparison_arrays_of_wind": [], "s2_arrays_of_wind": []}
-            for date in self.dates:
-                print("Variable: %s\nDate: %s" % (comparison_variable, date))
-                sh = SentinelHub()
-                sh.set_credentials(SH_CREDENTIALS_FILE)
-                sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
-                file_str = "_".join([str(coord) for coord in sh_bbox]) + "_" + date.replace("-", "_")
-                split = file_str.split("_")
-                d, m, y = split[-3], split[-2], split[-1]
-                try:
-                    comparison_raster_file = glob(os.path.join(dir_target, file_prefix + "%s%s%s*.nc" % (y, m, d)))[0]
-                except IndexError:
-                    continue
-                merged_file = os.path.join(dir_validation_data, "s2_bands_%s.tiff" % file_str)
-                if os.path.exists(merged_file):
-                    pass
-                else:
-                    band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
-                                                     ["B04", "B03", "B02", "B08", "CLM"], resolution, dir_validation_data,
-                                                     merged_file)
-                    band_stack = None
-                detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
-                if os.path.exists(detections_file):
-                    pass
-                else:
-                    rf_td = RFTruckDetector()
-                    band_stack = rf_td.read_bands(merged_file)
-                    rf_td.preprocess_bands(band_stack[0:4])
-                    rf_td.train()
-                    prediction_array = rf_td.predict()
-                    prediction_boxes = rf_td.extract_objects(prediction_array)
-                    rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-                wind_dict = self.compare_s5p_no2(wind_dict, detections_file, comparison_raster_file, comparison_variable,
-                                                 "-".join([y, m, d]))
-            self.plot_by_wind(wind_dict, dir_target.split(os.sep)[-1], comparison_variable)
+        detection_files = []
+        for date in self.dates:
+            sh = SentinelHub()
+            sh.set_credentials(SH_CREDENTIALS_FILE)
+            sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
+            file_str = "_".join([str(coord) for coord in sh_bbox]) + "_" + date.replace("-", "_")
+            split = file_str.split("_")
+            d, m, y = split[-3], split[-2], split[-1]
+            merged_file = os.path.join(dir_validation_data, "s2_bands_%s.tiff" % file_str)
+            if os.path.exists(merged_file):
+                pass
+            else:
+                band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
+                                                 ["B04", "B03", "B02", "B08", "CLM"], resolution, dir_validation_data,
+                                                 merged_file)
+                band_stack = None
+            detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
+            detection_files.append(detections_file)
+            if os.path.exists(detections_file):
+                pass
+            else:
+                rf_td = RFTruckDetector()
+                band_stack = rf_td.read_bands(merged_file)
+                rf_td.preprocess_bands(band_stack[0:4])
+                rf_td.train()
+                prediction_array = rf_td.predict()
+                prediction_boxes = rf_td.extract_objects(prediction_array)
+                rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
         self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
+        for comparison_variable in comparison_variables:
+            self.compare_s5p_no2(comparison_variable, detection_files)
 
     def plot_s2_series(self):
         weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
@@ -140,119 +128,76 @@ class Comparison:
         plt.close()
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
-    def compare_s5p_no2(self, wind_dict, detections_file, raster_file, raster_variable_name, date_of_interest):
-        """
-        reads detections and raster tiles, number of detections in each cell is compared with n detections
-        :param detections_file: str file path to detections
-        :param raster_file: str file path of raster
-        :param raster_variable_name: str name of the variable in the netcdf
-        :param date_of_interest: str date
-        :return:
-        """
-        # load Sentinel-5P tiles and rasterize detections on that grid
-        detections = gpd.read_file(detections_file)
-        detections_basename = os.path.basename(detections_file)
-        detections = detections.to_crs("EPSG:4326")  # because rasters are given as 4326
-        reference_array = xr.open_dataset(raster_file)
-        lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
-        diff_lon_crop_lon = np.abs(lon - lon_crop)
-        crop_idx = np.where(diff_lon_crop_lon == np.min(diff_lon_crop_lon))[0][0] + 1
-    #    lon = lon[crop_idx:]  # crop lon
-        lat_resolution = np.mean(lat[1:] - lat[:-1])
-        lon_resolution = np.mean(lon[1:] - lon[:-1])
-        box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
-      #  comparison_array = reference_array[raster_variable_name].values[:, crop_idx:]
-        comparison_array = reference_array[raster_variable_name].values
-        s2_trucks_array = np.zeros_like(comparison_array)
-        # iterate over cells and count number of s2 trucks
-        for y in range(s2_trucks_array.shape[0]):
-            for x in range(s2_trucks_array.shape[1]):
-                ymin, xmin = lat[y], lon[x]
+    def compare_s5p_no2(self, raster_variable_name, detection_files):
+        wind_bins_low = np.arange(0, 360, 180, dtype=np.float32)  # wind directions
+        wind_bins_up = np.arange(180, 361, 180, dtype=np.float32)
+        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
+        for row_idx in range(len(uba_station_locations_pd)):
+            row = uba_station_locations_pd.iloc[row_idx]
+            station_point = Point([row.lon, row.lat])
+            # iterate over dates, get numbers for each date by wind direction
+            observation_dict = {}
+            for wind_low in wind_bins_low:
+                observation_dict[str(wind_low)] = {"comparison": [], "s2": []}
+            for date, detections_file in zip(self.dates, detection_files):
+                date_compact = date[-4:] + date[3:5] + date[0:2]
                 try:
-                    ymax = lat[y + 1]
+                    comparison_raster_file = glob(os.path.join(
+                        dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[0]
                 except IndexError:
-                    ymax = lat[y] + lat_resolution
-                try:
-                    xmax = lon[x + 1]
-                except IndexError:
-                    xmax = lon[x] + lon_resolution
-                cell_box_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[box(xmin, ymin, xmax, ymax)],
-                                                crs=detections.crs)  # raster cell as box, count boxes within
-                s2_trucks_array[y, x] = len(gpd.clip(detections, cell_box_gpd))  # number of detections in cell
-        detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + box_str +
-                                              "reference%s.tiff" % raster_variable_name)
-        # trucks raster to gtiff
-        meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
-                    width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
-        meta["transform"] = rio.transform.from_bounds(np.min(lon), np.min(lat), np.max(lon), np.max(lat), len(lon),
-                                                      len(lat))
-        with rio.open(detections_raster_file, "w", **meta) as tgt:
-            tgt.write(s2_trucks_array, 1)
-        # plot detections vs. comparison array
-        comparison_array[s2_trucks_array < 0] = np.nan
-        s2_trucks_array[s2_trucks_array < 0] = np.nan
-        wind = xr.open_dataset(
-            os.path.join(dir_comparison_wind, "Wind_U_V_%s.nc" % date_of_interest.replace("-", "")))
-        wind_direction = self.calc_wind_direction(wind)
-        wind_direction[np.isnan(comparison_array)] = np.nan
-        for idx, wind_low, wind_up in zip(range(len(wind_dict["bins_low"])), wind_dict["bins_low"],
-                                          wind_dict["bins_up"]):
-            wind_name = "wind_%s_%s.pickle" % (wind_low, wind_up)  # list pickle with values of this wind direction
-   #         comparison_wind_file = os.path.join(dir_comparison_s5p, wind_name)
-    #        s2_wind_file = os.path.join(dir_comparison_detections_boxes, wind_name)
-     #       try:
-       #         comparison_wind = pickle.load(open(comparison_wind_file, "rb"))
-      #          s2_wind = pickle.load(open(s2_wind_file, "rb"))
-         #   except FileNotFoundError:
-        #        comparison_wind, s2_wind = [], []
-            # filter by wind direction
-            ys, xs = np.where((wind_direction >= wind_low) * (wind_direction < wind_up))
-            for y, x in zip(ys, xs):
-                try:
-                    wind_dict["comparison_arrays_of_wind"][idx].append(comparison_array[y, x])
-                    wind_dict["s2_arrays_of_wind"][idx].append(s2_trucks_array[y, x])
-                except IndexError:
-                    wind_dict["comparison_arrays_of_wind"].append([comparison_array[y, x]])
-                    wind_dict["s2_arrays_of_wind"].append([s2_trucks_array[y, x]])
-      #      pickle.dump(comparison_wind, open(comparison_wind_file, "wb"))
-       #     pickle.dump(s2_wind, open(s2_wind_file, "wb"))
-        return wind_dict
+                    continue
+                print("Reading: %s" % comparison_raster_file)
+                reference_array = xr.open_dataset(comparison_raster_file)
+                lon, lat = reference_array.lon.values, reference_array.lat.values
+                # location in array
+                x_station = np.argmin(np.abs(lon - station_point.x))
+                y_station = np.argmin(np.abs(lat - station_point.y))
+                comparison_array = reference_array[raster_variable_name].values
+                wind = xr.open_dataset(
+                    os.path.join(dir_comparison_wind, "Wind_U_V_%s.nc" % date_compact))
+                wind_direction = self.calc_wind_direction(wind)
+                wind_direction[np.isnan(comparison_array)] = np.nan
+                detections = gpd.read_file(detections_file)
+                detections_basename = os.path.basename(detections_file).replace(".gpkg", "")
+                detections = detections.to_crs("EPSG:4326")  # because rasters are given as 4326
+                detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + ".tiff")
+                if os.path.exists(detections_raster_file):
+                    with rio.open(detections_raster_file, "r") as src:
+                        s2_trucks_array = src.read(1)
+                else:
+                    s2_trucks_array = self.rasterize_s2_detections(
+                        detections, reference_array, raster_variable_name, detections_raster_file)
+                comparison_array[s2_trucks_array < 1] = np.nan
+                s2_trucks_array[np.isnan(comparison_array)] = np.nan
+                shape = comparison_array.shape
+                ymin, xmin = int(np.clip(y_station - 1, 0, np.inf)), int(np.clip(x_station - 1, 0, np.inf))
+                ymax, xmax = int(np.clip(y_station + 2, 0, shape[0])), int(np.clip(x_station + 2, 0, shape[1]))
+                comparison_subset = comparison_array[ymin:ymax, xmin:xmax]
+                s2_trucks_subset = s2_trucks_array[ymin:ymax, xmin:xmax]
+                wind_direction_subset = wind_direction[ymin:ymax, xmin:xmax]
+                for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
+                    ys, xs = np.where((wind_direction_subset >= wind_low) * (wind_direction_subset < wind_up))
+                    for y, x in zip(ys, xs):
+                        values = [comparison_subset[y, x], s2_trucks_subset[y, x]]
+                        if any([np.isnan(value) for value in values]):
+                            continue
+                        else:
+                            observation_dict[str(wind_low)]["comparison"].append(values[0])
+                            observation_dict[str(wind_low)]["s2"].append(values[1])
+            # plot values of all dates at this station by wind direction
+            for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
+                x = np.float32(observation_dict[str(wind_low)]["comparison"])
+                y = np.float32(observation_dict[str(wind_low)]["s2"])
+                self.plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
 
-    @staticmethod
-    def plot_by_wind(wind_dict, folder, raster_variable_name):
-        for idx, wind_low, wind_up in zip(range(len(wind_dict["bins_low"])),
-                                          wind_dict["bins_low"], wind_dict["bins_up"]):
-            x, y = np.float32(wind_dict["comparison_arrays_of_wind"][idx]), np.float32(wind_dict["s2_arrays_of_wind"][idx])
-            regress = linregress(x, y)
-            try:
-                m, b = np.polyfit(x, y, 1)
-            except np.linalg.LinAlgError:  # only zeros (nans)
-                continue
-            plt.plot(x, m * x + b, color="#2b2b2b")
-            plt.scatter(x, y)
-            plt.text(np.nanquantile(x, [0.025])[0],
-                     np.nanquantile(y, [0.95])[0], "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
-                                                                             np.round(regress.slope, 2)),
-                     fontsize=8)
-            comparison_name = {"OUT_S5P": "S5P NO2 total column", "OUT_Insitu": "Insitu"}[folder]
-            plt.ylabel("S2 trucks")
-            plt.xlabel(comparison_name)
-        #plt.title("S2 trucks vs. %s on %s" % (comparison_name, date_of_interest))
-            plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_wind_%s_%s.png" %
-                                     (wind_low, wind_up)))
-            plt.close()
-
-    @staticmethod
-    def compare_insitu_no2(detection_files):
+    def compare_insitu_no2(self, detection_files):
         crs = gpd.read_file(detection_files[0]).crs
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
         values = np.zeros((len(uba_station_locations_pd), 2, len(detection_files)))
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
             station_name = row.name
-            station_point_gpd = gpd.GeoDataFrame({"id": [0], "geometry": [Point([row.lat, row.lon])]}, crs="EPSG:4326")
-            station_point_gpd_utm = station_point_gpd.to_crs(crs)
-            station_buffer = station_point_gpd_utm.buffer(uba_station_buffer)
+            station_buffer = self.get_uba_station_buffer(row, uba_station_buffer, crs)
             station_file = os.path.join(dir_comparison_insitu, "_".join([station_name, "NO2", "year", "2018", ".nc"]))
             station_data = xr.open_dataset(station_file)
             station_obs = station_data.obs.values
@@ -288,6 +233,71 @@ class Comparison:
                      fontsize=8)
             plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=200)
             plt.close()
+
+    @staticmethod
+    def plot_by_wind(wind_low_threshold, wind_up_threshold, x, y, raster_variable_name, station_name):
+        if len(x) == 0 or len(y) == 0:
+            return
+        try:
+            m, b = np.polyfit(x, y, 1)
+        except np.linalg.LinAlgError:  # only zeros (nans)
+            return
+        regress = linregress(x, y)
+        plt.plot(x, m * x + b, color="#2b2b2b")
+        plt.scatter(x, y, color="#c404ab")
+        plt.axes().xaxis.set_tick_params(labelsize=8)
+        plt.axes().yaxis.set_tick_params(labelsize=8)
+        plt.text(np.nanquantile(x, [0.025])[0],
+                 np.nanquantile(y, [0.9])[0],
+                 "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
+                                                               np.round(regress.slope, 2)),
+                 fontsize=8)
+        plt.ylabel("S2 trucks")
+        plt.xlabel(raster_variable_name)
+        plt.title("UBA station %s | Wind direction %s-%s" % (station_name, wind_low_threshold, wind_up_threshold))
+        plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_wind_%s_%s_station_%s.png" %
+                                 (wind_low_threshold, wind_up_threshold, station_name)))
+        plt.close()
+
+    @staticmethod
+    def get_uba_station_buffer(station_pd_row, buffer_distance, crs):
+        station_point_gpd = gpd.GeoDataFrame({"id": [0], "geometry": [Point([station_pd_row.lon,
+                                                                             station_pd_row.lat])]}, crs="EPSG:4326")
+        station_point_gpd = station_point_gpd.to_crs(crs)
+        return station_point_gpd.buffer(buffer_distance)
+
+    @staticmethod
+    def rasterize_s2_detections(detections, reference_array, raster_variable_name, raster_file):
+        lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
+        lat_resolution = np.mean(lat[1:] - lat[:-1])
+        lon_resolution = np.mean(lon[1:] - lon[:-1])
+        box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
+        raster_file = raster_file.replace("BOX_STR", box_str)
+        comparison_array = reference_array[raster_variable_name].values
+        s2_trucks_array = np.zeros_like(comparison_array)
+        # iterate over cells and count number of s2 trucks
+        for y in range(s2_trucks_array.shape[0]):
+            for x in range(s2_trucks_array.shape[1]):
+                ymin, xmin = lat[y], lon[x]
+                try:
+                    ymax = lat[y + 1]
+                except IndexError:
+                    ymax = lat[y] + lat_resolution
+                try:
+                    xmax = lon[x + 1]
+                except IndexError:
+                    xmax = lon[x] + lon_resolution
+                cell_box_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[box(xmin, ymin, xmax, ymax)],
+                                                crs=detections.crs)  # raster cell as box, count boxes within
+                s2_trucks_array[y, x] = len(gpd.clip(detections, cell_box_gpd))  # number of detections in cell
+        # trucks raster to gtiff
+        meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
+                    width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
+        meta["transform"] = rio.transform.from_bounds(np.min(lon), np.min(lat), np.max(lon), np.max(lat), len(lon),
+                                                      len(lat))
+        with rio.open(raster_file, "w", **meta) as tgt:
+            tgt.write(s2_trucks_array, 1)
+        return s2_trucks_array
 
     @staticmethod
     def calc_wind_direction(wind_xr):
