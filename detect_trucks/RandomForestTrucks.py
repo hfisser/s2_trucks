@@ -28,33 +28,11 @@ dirs["truth"] = os.path.join(dirs["main"], "truth")
 dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archive")
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Theeßen_2018-11-28_2018-11-28_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Nieder_Seifersdorf_2018-10-31_2018-10-31_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_AS_Dierdorf_VQ_Nord_2018-05-08_2018-05-08_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schuby_2018-05-05_2018-05-05_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Gospersgrün_2018-10-14_2018-10-14_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Offenburg_2018-09-27_2018-09-27_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Hagenow_2018-11-16_2018-11-16_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Bockel_2018-11-16_2018-11-16_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Schwandorf-Mitte_2018-07-03_2018-07-03_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Wurmberg_2018-09-27_2018-09-27_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Zimmern_ob_Rottweil_2018-09-27_2018-09-27_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_Röstebachtalbrücke_2018-04-10_2018-04-10_merged.tiff")
-#s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_12_10_2018.tiff")
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156_y0_x0.tif")
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200824T074621_N0214_R135_T35JPM_20200824T113239.tif")
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2B_MSIL2A_20200914T095029_N0214_R079_T34UDC_20200914T121343_y0_x0.tif")
-#s2_file = os.path.join(dirs["imgs"], "S2B_MSIL2A_20200327T101629_N0214_R065_T32UNA_20200327T134849_y0_x0.tif")
-#s2_file = os.path.join(dirs["main"], "data", "s2", "subsets", "S2A_MSIL2A_20200831T073621_N0214_R092_T37MCT_20200831T101156_y0_x0.tif")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_23_08_2018.tiff")
 
 do_tuning = False
 truth_path = os.path.join(dirs["truth"], "spectra_ml.csv")
-f = os.path.join(dirs["truth"], "spectra_ml1.csv")
-if not os.path.exists(f):
-    shutil.copyfile(truth_path, f)
-t = pd.read_csv(truth_path)
 
 OSM_BUFFER = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
@@ -99,10 +77,6 @@ class RFTruckDetector:
             self._split_train_test()
             rf.fit(self.truth_variables["train"], self.truth_labels["train"])
             self.io.write_model(rf, MODEL_PATH)
-         #   test_pred = rf.predict(self.truth_variables["test"])
-         #   accuracy = metrics.accuracy_score(self.truth_labels["test"], test_pred)
-    #        print("RF accuracy: %s" % accuracy)
-        #    self.variables = self._build_variables(band_stack)
         try:
             os.remove(self.truth_path_tmp)
         except TypeError:
@@ -145,8 +119,7 @@ class RFTruckDetector:
             ymin, ymax, xmin, xmax = subset_box["ymin"], subset_box["ymax"], subset_box["xmin"], subset_box["xmax"]
             bands_rescaled = bands_rescaled[:, ymin:ymax, xmin:xmax]
             self.lat, self.lon = self.lat[ymin:ymax], self.lon[xmin:xmax]
-            self.meta["height"] = bands_rescaled.shape[1]
-            self.meta["width"] = bands_rescaled.shape[2]
+            self.meta["height"], self.meta["width"] = bands_rescaled.shape[1], bands_rescaled.shape[2]
             t = list(self.meta["transform"])
             t[2], t[5] = self.lon[0], self.lat[0]
             self.meta["transform"] = Affine(t[0], t[1], t[2], t[3], t[4], t[5])
@@ -159,7 +132,13 @@ class RFTruckDetector:
         osm_mask = None
         self._build_variables(bands_rescaled)
 
+    def mask_clouds(self, cloud_mask):
+        self.variables[:] *= cloud_mask
+        self.variables[self.variables == 0] = np.nan
+
     def predict(self):
+        if self.rf is None:
+            self.rf = self.io.read_model(MODEL_PATH)
         print("-" * 20 + "\nPredicting")
         t0 = datetime.now()
         vars_reshaped = []
@@ -171,7 +150,6 @@ class RFTruckDetector:
             nan_mask[:, var_idx] = ~np.isnan(vars_reshaped[:, var_idx])  # exclude nans
         not_nan = np.nanmin(nan_mask, 1).astype(np.bool) * np.min(np.isfinite(vars_reshaped), 1).astype(np.bool)
         predictions_flat = self.rf.predict_proba(vars_reshaped[not_nan])
-        #probabilities_shaped = np.zeros_like(vars_reshaped[:, 1:4])
         probabilities_shaped = vars_reshaped[:, 0:4].copy()
         for idx in range(predictions_flat.shape[1]):
             probabilities_shaped[not_nan, idx] = predictions_flat[:, idx]
@@ -201,10 +179,6 @@ class RFTruckDetector:
     def _prepare_truth(self):
         truth_data = pd.read_csv(truth_path, index_col=0)
         truth_data.index, label = list(range(len(truth_data))), "background"
-  #      b = np.where(truth_data["label"] == "background")[0]
-   #     truth_data.index = list(range(len(truth_data)))
-    #    for idx in np.random.choice(b, int(len(b) * 0.5), replace=False):
-     #       truth_data.drop(idx, inplace=True)
         self.truth_path_tmp = os.path.join(os.path.dirname(truth_path), "tmp.csv")
         try:
             truth_data.to_csv(self.truth_path_tmp)
@@ -252,9 +226,6 @@ class RFTruckDetector:
         meta = self.meta.copy()
         meta["count"] = variables.shape[0]
         meta["dtype"] = np.float32
-        with rio.open(os.path.join(dirs["main"], "test1.tiff"), "w", **meta) as tgt:
-            for idx in range(variables.shape[0]):
-                tgt.write(variables[idx].astype(np.float32), idx + 1)
         self.variables = variables.astype(np.float16)
 
     def _eliminate_clusters(self, arr):
@@ -273,7 +244,6 @@ class RFTruckDetector:
         for idx, threshold in zip(range(self.probabilities.shape[0] - 1), (0.4, 0.4, 0.4, 0.4)):
             self.probabilities[idx, self.probabilities[idx] < threshold] = 0
         classification = np.argmax(self.probabilities, 0) + 1
-    #    classification[self.low_reflectance_mask == 0] = 0
         return classification.astype(np.int8)
 
     def read_bands(self, path):
