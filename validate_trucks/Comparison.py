@@ -129,8 +129,8 @@ class Comparison:
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
     def compare_s5p_no2(self, raster_variable_name, detection_files):
-        wind_bins_low = np.arange(0, 360, 180, dtype=np.float32)  # wind directions
-        wind_bins_up = np.arange(180, 361, 180, dtype=np.float32)
+        wind_bins_low = np.arange(0, 360, 90, dtype=np.float32)  # wind directions
+        wind_bins_up = np.arange(90, 361, 90, dtype=np.float32)
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
@@ -312,8 +312,9 @@ class Comparison:
                 if vector[0] == 0:
                     direction = 0.
                 else:
-                    direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
-                wind_direction[y, x] = direction + offset
+                    direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0]))) + offset
+                meteorological_direction = direction - 180 if direction >= 180 else direction + 180
+                wind_direction[y, x] = meteorological_direction
         return wind_direction
 
     @staticmethod
