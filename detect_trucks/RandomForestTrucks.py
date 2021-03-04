@@ -29,7 +29,7 @@ dirs["s2_data"] = os.path.join(dirs["main"], "validation", "data", "s2", "archiv
 dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "osm")
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
-s2_file = os.path.join(dirs["s2_data"], "s2_bands_10.132245411020264_51.932680976623196_11.256446405338455_52.630692340259564_23_08_2018.tiff")
+s2_file = os.path.join(dirs["s2_data"], "s2_bands_Salzbergen_2018-06-07_2018-06-07_merged.tiff")
 
 do_tuning = False
 truth_path = os.path.join(dirs["truth"], "spectra_ml.csv")
@@ -133,6 +133,8 @@ class RFTruckDetector:
         self._build_variables(bands_rescaled)
 
     def mask_clouds(self, cloud_mask):
+        cloud_mask = cloud_mask.astype(np.float32)
+        cloud_mask[cloud_mask == 0] = np.nan
         self.variables[:] *= cloud_mask
         self.variables[self.variables == 0] = np.nan
 
@@ -202,7 +204,6 @@ class RFTruckDetector:
     def _build_variables(self, band_stack):
         green_blue_ratio = normalized_ratio(band_stack[1], band_stack[2])
         red_blue_ratio = normalized_ratio(band_stack[0], band_stack[2])
-        green_red_ratio = normalized_ratio(band_stack[1], band_stack[0])
         red_blue_mask = np.int8(red_blue_ratio < np.nanquantile(red_blue_ratio, [0.25]))
         green_blue_mask = np.int8(green_blue_ratio < np.nanquantile(green_blue_ratio, [0.25]))
         self.blue_ratio_mask = green_blue_mask * red_blue_mask
@@ -247,6 +248,7 @@ class RFTruckDetector:
         return classification.astype(np.int8)
 
     def read_bands(self, path):
+        # bands at path must be: Sentinel-2 0=B04, 1=B03, 2=B02, 3=B08
         return self.io.read_bands(path)
 
     def prediction_raster_to_gtiff(self, the_raster, path):
