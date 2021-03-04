@@ -56,9 +56,10 @@ class SentinelHub:
                 request = sh_request_builder.request(self.sh_config, dir_save)
                 data = request.get_data(save_data=dir_save is not None)[0]
                 d = request.data_folder
-                # change dtype
-                folder = self.list_non_tiffs(d)[0]
-                self.change_tiff_dtype(glob(os.path.join(folder, "*.tiff"))[0], np.float32)
+                try:
+                    self.change_tiff_dtype(os.path.join(d, request.get_filename_list()[0]), np.float32)  # change dtype
+                except IndexError:
+                    pass
                 print("Retrieved data of shape: %s" % str(data.shape))
                 return data, d
 
@@ -142,6 +143,30 @@ class SentinelHub:
         bbox_splitter = BBoxSplitter([polygon_epsg4326], CRS.WGS84, (x_nboxes, y_nboxes), reduce_bbox_sizes=True)
         return bbox_splitter.get_bbox_list()
 
+    def data_available(self, request_kwargs):
+        kwargs = request_kwargs.copy()
+        bbox_copy = list(kwargs["bbox"]).copy()
+        lon_extent, lat_extent = np.abs(bbox_copy[0] - bbox_copy[2]), np.abs(bbox_copy[1] - bbox_copy[3])
+        # strongly crop bbox to very small aoi in order to only get test pixels
+        bbox_copy[0] += lon_extent * 0.499
+        bbox_copy[1] += lat_extent * 0.4999
+        bbox_copy[2] -= lon_extent * 0.499
+        bbox_copy[3] -= lat_extent * 0.4999
+        kwargs["bbox"] = self.split_box(bbox_copy, kwargs["resolution"])[0]
+        kwargs["bands"] = ["B02"]
+        kwargs["merged_file"] = os.path.join(os.path.dirname(kwargs["merged_file"]), "test.tiff")
+        test_data, d = self.get_data(**kwargs)
+        dir_list = self.list_non_tiffs(d)
+        try:
+            dir_list.remove(os.path.dirname(kwargs["merged_file"]))
+        except ValueError:
+            pass
+        try:
+            shutil.rmtree(dir_list[0])
+        except IndexError:
+            pass
+        return np.count_nonzero(test_data) > 0
+
     @staticmethod
     def list_non_tiffs(d):
         return list(set(glob(os.path.join(d, "*"))) - set(glob(os.path.join(d, "*.tiff"))))
@@ -162,25 +187,6 @@ class SentinelHub:
         with rio.open(file, "w", **meta) as tgt:
             for band_idx in range(meta["count"]):
                 tgt.write(data[band_idx], band_idx + 1)
-
-    def data_available(self, request_kwargs):
-        kwargs = request_kwargs.copy()
-        bbox_copy = kwargs["bbox"].copy()
-        lon_extent, lat_extent = np.abs(bbox_copy[0] - bbox_copy[2]), np.abs(bbox_copy[1] - bbox_copy[3])
-        # strongly crop bbox to very small aoi in order to only get test pixels
-        bbox_copy[0] += lon_extent * 0.499
-        bbox_copy[1] += lat_extent * 0.4999
-        bbox_copy[2] -= lon_extent * 0.499
-        bbox_copy[3] -= lat_extent * 0.4999
-        kwargs["bbox"] = self.split_box(bbox_copy, kwargs["resolution"])[0]
-        kwargs["bands"] = ["B02"]
-        kwargs["merged_file"] = os.path.join(os.path.dirname(kwargs["merged_file"]), "test.tiff")
-        test_data, d = self.get_data(**kwargs)
-        try:
-            shutil.rmtree(self.list_non_tiffs(d)[0])
-        except IndexError:
-            pass
-        return np.count_nonzero(test_data) > 0
 
 
 if __name__ == "__main__":
