@@ -16,10 +16,9 @@ time_offset_sorted = time_offset[arg_sorted]
 bands_a_sorted, bands_b_sorted = np.array(bands_a)[arg_sorted], np.array(bands_b)[arg_sorted]
 bands = list(bands_a_sorted + "/" + bands_b_sorted)
 plt.scatter(time_offset_sorted, bands, color="black")
-plt.subplots_adjust(bottom=0.2)
 plt.xlabel("Time offset")
 plt.ylabel("Band combination")
-plt.title("Sentinel-2 temporal offsets [s] between bands")
+plt.title("Sentinel-2 temporal offsets [s] between bands", fontsize=12)
 plt.axes().xaxis.set_tick_params(labelsize=8)
 plt.axes().yaxis.set_tick_params(labelsize=8)
-plt.savefig(os.path.join(dir_plots, "s2_temporal_offsets_bands.png"), dpi=200)
+plt.savefig(os.path.join(dir_plots, "s2_temporal_offsets_bands_points.png"), dpi=300)

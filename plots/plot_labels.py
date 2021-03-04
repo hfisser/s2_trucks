@@ -15,6 +15,8 @@ truth_pd = pd.read_csv(os.path.join(dirs["main"], "truth", "spectra_ml.csv"))
 COLORS = ["#2e2e2e", "#0000ff", "#00ff00", "#ff0000"]
 LABEL_INTS, LABELS = [1, 2, 3, 4], ["background", "blue", "green", "red"]
 
+sns.set_theme(style="whitegrid")
+
 
 def plot_labels_relative(tiles, area_columns):
     fig, ax = plt.subplots(figsize=(10, 3))
@@ -62,21 +64,13 @@ def plot_labels_relative(tiles, area_columns):
     plt.close()
 
 
-def plot_label_data(truth):
-    red = truth[truth["label"] == "red"]
-    green = truth[truth["label"] == "green"]
-    blue = truth[truth["label"] == "blue"]
-    background = truth[truth["label"] == "background"]
-    plot_label_distribution(truth)
-
-
 def plot_label_distribution(truth):
     fig, ax = plt.subplots(figsize=(8, 1))
     left = 0
     counts = [np.count_nonzero(truth["label_int"] == label_int) for label_int in LABEL_INTS]
     for count, label, label_int in zip(counts, LABELS, LABEL_INTS):
         plt.barh(0, count, height=0.1, color=COLORS[label_int - 1], left=left, edgecolor="black", label=label)
-        text = ax.text(left + count * 0.5, 0, label + "\nn=" % count, ha="center", va="center",
+        text = ax.text(left + count * 0.5, 0, label + "\nn=%s" % count, ha="center", va="center",
                        color="w", fontsize=10)
         left += count
     ax.set_yticks([0])
@@ -85,14 +79,16 @@ def plot_label_distribution(truth):
     ax.yaxis.set_tick_params(labelsize=8)
     plt.xlim(0, left)
     plt.tight_layout()
+    ax.set_yticklabels("")
     plt.savefig(os.path.join(dirs["plots"], "label_distribution_barplot.png"), dpi=300)
     plt.close()
 
 
 def plot_label_stats(truth):
-    sns.set_theme(style="whitegrid")
-    variable_names = ["red_normalized", "green_normalized", "blue_normalized"]
-    var_names_clean = ["Red", "Green", "Blue"]
+    variable_names = ["red_normalized", "green_normalized", "blue_normalized", "reflectance_var", "red_blue_ratio",
+                      "green_blue_ratio"]
+    rgb_variables = ["Red", "Green", "Blue"]
+    variances = []
     for label_int, label in zip(LABEL_INTS, LABELS):
         subset = truth[truth["label"] == label]
         subset.index = range(len(subset))
@@ -102,18 +98,48 @@ def plot_label_stats(truth):
             r = row[1]
             variables[i] = np.float32([r[column] for column in variable_names])
             i += 1
-        indices = range(len(variable_names))
-        data = pd.DataFrame({"label": np.array([np.repeat(var_names_clean[i], len(subset)) for i in indices]).flatten(),
-                             "value": np.float32([variables[:, i] for i in range(variables.shape[1])]).flatten()})
+        indices = range(len(rgb_variables))
+        data = pd.DataFrame({"label": np.hstack([np.repeat(rgb_variables[i], len(subset)) for i in indices]),
+                             "value": np.hstack([variables[:, i] for i in indices]).flatten()})
         ax = sns.violinplot(y="value", x="label", data=data, palette=COLORS[1:][::-1])
-        ax.set_ylim(0, np.nanquantile(data["value"], [0.999]))
+        ax.set_ylim(0, 3.5)
         ax.set_ylabel("Normalized\nreflectance", fontsize=12)
-        ax.set_xticklabels(var_names_clean, fontsize=12)
+        ax.set_xticklabels(rgb_variables, fontsize=12)
         ax.set_xlabel("")
-        ax.set_title("Reflectances at '%s' label" % label, fontsize=16)
+        ax.set_title("Normalized reflectances at '%s' label" % label, fontsize=12)
         plt.savefig(os.path.join(dirs["plots"], "reflectances_at_%s_label_violinplot.png" % label))
+        plt.close()
+        variances.append(variables[:, 3])  # for plotting all together
+        # plot ratios
+        indices = range(-2, 0)
+        data = pd.DataFrame({"label": np.hstack([np.repeat(variable_names[i], len(subset)) for i in indices]),
+                             "value": np.hstack([variables[:, i] for i in indices])})
+        ax = sns.violinplot(y="value", x="label", data=data, palette=["#dc4ff0", "#39e7ad"])
+        ax.set_ylim(-0.7, 0.7)
+        ax.set_ylabel("Ratio", fontsize=12)
+        ax.set_xticklabels(variable_names[-2:], fontsize=12)
+        ax.set_xlabel("")
+        ax.set_title("Reflectance ratios at '%s' label" % label, fontsize=12)
+        plt.savefig(os.path.join(dirs["plots"], "reflectance_ratios_at_%s_label_violinplot.png" % label))
+        plt.close()
+    # plot variance
+    data = pd.DataFrame({
+        "label": np.hstack([np.repeat(label, len(variances[i])) for i, label in enumerate(LABELS)]),
+        "value": np.hstack(variances)})
+    ax = sns.violinplot(y="value", x="label", data=data, palette=["#757575"])
+    ax.set_ylim(-0.1, np.nanquantile(data["value"], [0.999]))
+    ax.set_ylabel("Variance", fontsize=12)
+    labels_clean = ["'%s' label" % (the_label[0].upper() + the_label[1:]) for the_label in LABELS]
+    ax.set_xticklabels(labels_clean, fontsize=12)
+    ax.set_xlabel("")
+    ax.set_title("Variance of normalized RGB reflectances by label", fontsize=12)
+    plt.savefig(os.path.join(dirs["plots"], "rgb_variances_all_labels_violinplot.png"), dpi=300)
+    plt.close()
+
 
 if __name__ == "__main__":
     area_column_names = [["validation_countries", "training_countries"], ["validation_areas", "training_areas"]]
     for these_area_column_names in area_column_names:
         plot_labels_relative(tiles_pd, these_area_column_names)
+    plot_label_stats(truth_pd)
+    plot_label_distribution(truth_pd)
