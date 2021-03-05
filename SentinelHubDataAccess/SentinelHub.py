@@ -149,9 +149,9 @@ class SentinelHub:
         lon_extent, lat_extent = np.abs(bbox_copy[0] - bbox_copy[2]), np.abs(bbox_copy[1] - bbox_copy[3])
         # strongly crop bbox to very small aoi in order to only get test pixels
         bbox_copy[0] += lon_extent * 0.499
-        bbox_copy[1] += lat_extent * 0.4999
+        bbox_copy[1] += lat_extent * 0.4995
         bbox_copy[2] -= lon_extent * 0.499
-        bbox_copy[3] -= lat_extent * 0.4999
+        bbox_copy[3] -= lat_extent * 0.4995
         kwargs["bbox"] = self.split_box(bbox_copy, kwargs["resolution"])[0]
         kwargs["bands"] = ["B02"]
         kwargs["merged_file"] = os.path.join(os.path.dirname(kwargs["merged_file"]), "test.tiff")
