@@ -59,7 +59,6 @@ def plot_bast_validation(bast_validation):
     plt.ylabel("BAST Lzg")
     plt.xlabel("Sentinel-2 count")
     plt.title("Sentinel-2 trucks vs. BAST Lzg trucks", fontsize=12)
-    plt.subplots_adjust(right=0.75)
     plt.subplots_adjust(right=0.85)
     plt.legend(["Direction 1", "Direction 2"], loc="upper right", bbox_to_anchor=(1.3, 0.5), fontsize=10)
     plt.tight_layout()
