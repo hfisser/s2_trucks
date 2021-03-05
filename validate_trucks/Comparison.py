@@ -71,6 +71,7 @@ class Comparison:
     def run_comparison(self):
         detection_files = []
         for date in self.dates:
+            print(date)
             sh = SentinelHub()
             sh.set_credentials(SH_CREDENTIALS_FILE)
             sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
