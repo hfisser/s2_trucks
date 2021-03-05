@@ -5,15 +5,18 @@ import numpy as np
 import rasterio as rio
 import geopandas as gpd
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from glob import glob
 from shapely.geometry import Point, box
 from fiona.errors import DriverError
 from datetime import date, timedelta
-
+from scipy.stats import linregress
 from osm_utils.utils import get_roads
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
+
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_data = os.path.join(dir_main, "data")
@@ -35,7 +38,7 @@ NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
 OSM_BUFFER = 20
-hour, minutes, year = 10, 15, 2018
+hour, minutes, year = 10, 20, 2018
 
 validate = "boxes"
 validate = "bast"
@@ -77,7 +80,13 @@ class Validator:
 
     def validate_acquisition_wise(self, period):
         dates_between = self.generate_process_periods(period)
+        station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
+        wrong = len(station_folder) == 4
+        station_folder = "zst" + self.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
+        station_file = os.path.join(self.dirs["station_counts"], station_folder, station_folder + "_%s.csv" %
+                                    str(year))
         for sub_period in dates_between:
+            print("At date: %s" % sub_period)
             self.date = sub_period[0]
             band_names, resolution, folder = ["B04", "B03", "B02", "B08", "CLM"], 10, ""
             dir_save_archive = os.path.join(self.dirs["s2"], "archive")
@@ -88,54 +97,78 @@ class Validator:
             if not os.path.exists(dir_save_archive):
                 os.mkdir(dir_save_archive)
             sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])
+            detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
+                                           (self.date, self.station_name_clear))
             merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (self.station_name_clear,
                                                                                             sub_period[0],
                                                                                             sub_period[1]))
+            if os.path.exists(detections_file):
+                self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
+                continue
             kwargs = dict(bbox=sh_bbox, period=sub_period, dataset=DataCollection.SENTINEL2_L2A,
-                          bands=["B04", "B03", "B02", "B08"], resolution=resolution, dir_save=self.dirs["s2"],
+                          bands=["B04", "B03", "B02", "B08", "CLM"], resolution=resolution, dir_save=self.dirs["s2"],
                           merged_file=merged_file, mosaicking_order="leastCC")
-            sh = SentinelHub()
-            sh.set_credentials(SH_CREDENTIALS_FILE)
-            data_available = sh.data_available(kwargs)
+            data_yet_there, sh = os.path.exists(merged_file), SentinelHub()
+            obs_file = os.path.join(dir_save_archive, "obs.csv")  # check if acquisition has been checked
+            yet_checked = False
+            try:
+                obs_pd = pd.read_csv(obs_file, index_col=0)
+            except FileNotFoundError:
+                obs_pd = pd.DataFrame()
+                obs_pd.to_csv(obs_file)
+            try:
+                yet_checked = sub_period[0] in np.array(obs_pd[merged_file])
+            except KeyError:
+                pass
+            finally:
+                if yet_checked:
+                    continue
+            if data_yet_there:
+                data_available = True
+            else:
+                sh.set_credentials(SH_CREDENTIALS_FILE)
+                data_available = sh.data_available(kwargs)
             if data_available:
-                print("Processing: %s" % sub_period[0])
-                kwargs_copy = kwargs.copy()
-                kwargs_copy["bands"] = ["CLM"]  # get cloud mask in order to check if low cloud coverage
-                kwargs_copy["merged_file"] = os.path.join(dir_save_archive, "clm.tiff")
-                clm, data_folder = sh.get_data(**kwargs_copy)  # get only cloud mask
-                has_obs = self.has_observations(kwargs_copy["merged_file"])
-                try:
-                    os.remove(kwargs_copy["merged_file"])  # cloud mask
-                except FileNotFoundError:
-                    pass
+                if data_yet_there:
+                    has_obs = data_yet_there
+                else:
+                    kwargs_copy = kwargs.copy()
+                    kwargs_copy["bands"] = ["CLM"]  # get cloud mask in order to check if low cloud coverage
+                    kwargs_copy["merged_file"] = os.path.join(dir_save_archive, "clm.tiff")
+                    clm, data_folder = sh.get_data(**kwargs_copy)  # get only cloud mask
+                    has_obs = self.has_observations(kwargs_copy["merged_file"])
+                    try:
+                        os.remove(kwargs_copy["merged_file"])  # cloud mask
+                    except FileNotFoundError:
+                        pass
                 if has_obs:
+                    print("Processing: %s" % sub_period[0])
                     band_stack, folder = sh.get_data(**kwargs)  # get full data
-                    detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
-                                                   (self.date, self.station_name_clear))
                     detector = RFTruckDetector()
                     band_stack = detector.read_bands(merged_file)
-                    detector.preprocess_bands(band_stack)
-                    detector.mask_clouds(clm)
+                    detector.train()
+                    detector.preprocess_bands(band_stack[0:4])
                     detector.train()
                     prediction = detector.predict()
                     prediction_boxes = detector.extract_objects(prediction)
                     try:
                         detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
                     except ValueError:
-                        pass
-                    station_folder = "zst" + self.station_name.split("(")[1].split(")")[0]
-                    wrong = len(station_folder) == 4
-                    station_folder = "zst" + self.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
-                    station_file = os.path.join(self.dirs["station_counts"], station_folder, station_folder + "_%s.csv" %
-                                                str(year))
+                        print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                        continue
                     self.detections_file = detections_file
                     with rio.open(merged_file, "r") as src:
                         meta = src.meta
                     self.lat = lat_from_meta(meta)
                     self.lon = lon_from_meta(meta)
                     detector, band_stack_np = None, None
-                    # run comparison
-                    self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
+                    self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)  # run comparison
+                else:
+                    # add date for file in order to avoid duplicate check
+                    self.register_non_available_date(sub_period[0], obs_pd, obs_file, merged_file)
+            else:
+                self.register_non_available_date(sub_period[0], obs_pd, obs_file, merged_file)
+        self.plot_bast_comparison(self.validation_file)
 
     def validate_with_bast(self, acquisition_date, detections_file, station_file, s2_data_file):
         try:
@@ -189,7 +222,8 @@ class Validator:
         for key, value in {"station_file": station_file, "s2_counts_file": s2_data_file,
                            "detections_file": detections_file,
                            "date": acquisition_date, "hour": hour, "n_minutes": minutes,
-                           "s2_direction1": s2_direction1, "s2_direction2": s2_direction2}.items():
+                           "s2_direction1": s2_direction1, "s2_direction2": s2_direction2,
+                           "s2_sum": len(detections_in_buffer)}.items():
             validation_pd.loc[idx, key] = [value]
         for column in station_counts_hour.columns[9:]:  # counts from station
             # add counts proportional to number of minutes
@@ -381,9 +415,12 @@ class Validator:
 
     @staticmethod
     def has_observations(cloud_mask_file):
-        min_valid_percentage = 95
+        min_valid_percentage = 90
         rf_td = RFTruckDetector()
-        clm = rf_td.read_bands(cloud_mask_file)
+        try:
+            clm = rf_td.read_bands(cloud_mask_file)
+        except rio.errors.RasterioIOError:
+            return False
         clm[clm == 0] = 1  # nocloud=0
         clm[clm == 255] = 0  # cloud=255
         pseudo_band = np.random.random(len(clm.flatten())).reshape((clm.shape[0], clm.shape[1]))
@@ -394,7 +431,60 @@ class Validator:
         n_valid_masked = np.count_nonzero(~np.isnan(rf_td.variables[0]))  # n valid pixels cloud-masked
         valid_percentage = (n_valid_masked / n_valid) * 100
         rf_td, clm = None, None
-        return valid_percentage < min_valid_percentage
+        return valid_percentage > min_valid_percentage
+
+    @staticmethod
+    def register_non_available_date(the_date, table, table_file, raster_file):
+        try:
+            table.loc[len(table[raster_file].dropna()), raster_file] = the_date
+        except KeyError:
+            table[raster_file] = [the_date]
+        table.to_csv(table_file)
+
+    @staticmethod
+    def plot_bast_comparison(validation_file):
+        s2_color, bast_color = "#5e128a", "#33bd2b"
+        sns.set(rc={'figure.figsize': (9, 5)})
+        sns.set_theme(style="whitegrid")
+        validation = pd.read_csv(validation_file)
+        unique_dates = np.unique(validation["date"])
+        colors = [s2_color, "#f542cb", bast_color, "#abc70a"]
+        columns = ["s2_direction1", "s2_direction2", "Lzg_R1", "Lzg_R2"]
+        counts = np.zeros((len(unique_dates), 4), dtype=np.int16)
+        for i, acquisition_date in enumerate(unique_dates):
+            idx = np.where(validation["date"] == acquisition_date)[0][0]
+            row = validation.iloc[idx]
+            counts[i] = np.int16([np.int16(row[column]) for column in columns])
+        for i, c in enumerate(colors):
+            ax = sns.lineplot(x=unique_dates, y=counts[:, i], color=c)
+        labels = ["S2 direction 1", "S2 direction 2", "BAST Lzg direction 1", "BAST Lzg direction 2"]
+        plt.legend(labels, bbox_to_anchor=(1.22, 0.5), fontsize=10, loc="center right")
+        plt.subplots_adjust(bottom=0.2, right=0.85)
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        ax.xaxis.set_tick_params(labelsize=10)
+        ax.yaxis.set_tick_params(labelsize=10)
+        title = "Sentinel-2 & BAST counts " + validation_file.split("_")[-1].split(".csv")[0]
+        plt.title(title, fontsize=12)
+        plt.tight_layout()
+        fname = title.replace(" ", "_")
+        plt.savefig(os.path.join(dir_validation, "%s_lineplot.png" % fname), dpi=300)
+        plt.close()
+        # scatter
+        sns.set(rc={'figure.figsize': (8, 6)})
+        sns.set_theme(style="whitegrid")
+        s2, bast = counts[:, 0] + counts[:, 1], counts[:, 2] + counts[:, 3]
+        c, position = "#0c7a77", [15, np.max(s2) + 30]
+        ax = sns.scatterplot(x=s2, y=bast, color=c)
+        ax = sns.regplot(x=s2, y=bast, color=c)
+        regress = linregress(x=s2, y=bast)
+        plt.text(position[0], position[1],
+                 "Lin. regression\nrsquared=%s\nslope=%s" % (np.round(regress.rvalue, 2),
+                                                             np.round(regress.slope, 2)), fontsize=8)
+        plt.ylabel("BAST Lzg", fontsize=10)
+        plt.xlabel("Sentinel-2 count", fontsize=10)
+        plt.title("Sentinel-2 trucks vs. BAST Lzg", fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(dir_validation, "%s_scatterplot.png" % fname), dpi=300)
 
 
 if __name__ == "__main__":
@@ -412,7 +502,6 @@ if __name__ == "__main__":
         validator = Validator(station, aois_file, dir_validation, dir_osm)
         if validate == "boxes":
             validator.validate_boxes()
-            break
         else:
             print("%s\nStation: %s" % ("-" * 50, station))
             validator.validate_acquisition_wise(acquisition_period)
