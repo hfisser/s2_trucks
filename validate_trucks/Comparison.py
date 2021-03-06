@@ -6,6 +6,7 @@ import pandas as pd
 import xarray as xr
 import rasterio as rio
 import matplotlib.pyplot as plt
+import seaborn as sns
 from shapely.geometry import Point
 from validate_trucks.TruckValidator import Validator
 from glob import glob
@@ -98,9 +99,11 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-        self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
+        uba_no2 = self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
         for comparison_variable in comparison_variables:
-            self.compare_s5p_no2(comparison_variable, detection_files)
+            variables_dict = self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2)
+        self.line_plot_summary(self.dates, variables_dict["s2"], variables_dict["comparison"], uba_no2,
+                               variables_dict["wind"], variables_dict["station_names"])
 
     def plot_s2_series(self):
         weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
@@ -129,12 +132,15 @@ class Comparison:
         plt.close()
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
-    def compare_s5p_no2(self, raster_variable_name, detection_files):
+    def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_values):
         wind_bins_low = np.arange(0, 360, 90, dtype=np.float32)  # wind directions
         wind_bins_up = np.arange(90, 361, 90, dtype=np.float32)
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
+        wind_arrays, s2_arrays, comparison_arrays, station_names = [], [], [], []  # all timestamps
+        meta = None
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
+            station_names.append(row.name)
             station_point = Point([row.lon, row.lat])
             # iterate over dates, get numbers for each date by wind direction
             observation_dict = {}
@@ -149,6 +155,7 @@ class Comparison:
                     continue
                 print("Reading: %s" % comparison_raster_file)
                 reference_array = xr.open_dataset(comparison_raster_file)
+                comparison_arrays.append(reference_array)
                 lon, lat = reference_array.lon.values, reference_array.lat.values
                 # location in array
                 x_station = np.argmin(np.abs(lon - station_point.x))
@@ -164,6 +171,7 @@ class Comparison:
                 detections_raster_file = os.path.join(dir_comparison_detections_rasters, detections_basename + ".tiff")
                 if os.path.exists(detections_raster_file):
                     with rio.open(detections_raster_file, "r") as src:
+                        meta = src.meta
                         s2_trucks_array = src.read(1)
                 else:
                     s2_trucks_array = self.rasterize_s2_detections(
@@ -185,11 +193,21 @@ class Comparison:
                         else:
                             observation_dict[str(wind_low)]["comparison"].append(values[0])
                             observation_dict[str(wind_low)]["s2"].append(values[1])
+                wind_arrays.append(wind_direction)
+                s2_arrays.append(s2_trucks_array)
             # plot values of all dates at this station by wind direction
             for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
-                x = np.float32(observation_dict[str(wind_low)]["comparison"])
-                y = np.float32(observation_dict[str(wind_low)]["s2"])
-                self.plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
+                x = np.float32(observation_dict[str(wind_low)]["s2"])
+                y = np.float32(observation_dict[str(wind_low)]["comparison"])
+                self.scatter_plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
+        # spatial comparison
+        correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays, wind_bins_low, wind_bins_up)
+        meta["count"], meta["dtype"] = correlations.shape[0], np.float32
+        correlations_file = os.path.join(dir_comparison_plots, "spatial_correlations_%s.tiff" % raster_variable_name)
+        with rio.open(correlations_file, "w", **meta) as tgt:
+            for idx in range(meta["count"]):
+                tgt.write(correlations[idx].astype(np.float32), idx + 1)
+        return {"wind": wind_arrays, "s2": s2_arrays, "comparison": comparison_arrays, "station_names": station_names}
 
     def compare_insitu_no2(self, detection_files):
         crs = gpd.read_file(detection_files[0]).crs
@@ -213,7 +231,7 @@ class Comparison:
                 values[row_idx, 0, idx] = no2_of_hour
                 values[row_idx, 1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
             values[np.isnan(values)] = 0
-            y, x = values[row_idx][1], values[row_idx][0]
+            y, x = values[row_idx][0], values[row_idx][1]
             y[x == 0] = 0
             x[y == 0] = 0
             regress = linregress(x, y)
@@ -223,8 +241,8 @@ class Comparison:
                 continue
             plt.plot(x, m * x + b, color="#2b2b2b")
             plt.scatter(x, y, color="#c404ab")
-            plt.ylabel("S2 trucks")
-            plt.xlabel("UBA station NO2 (10-11 AM)")
+            plt.xlabel("S2 trucks")
+            plt.ylabel("UBA station NO2 (10-11 AM)")
             plt.title("UBA station %s" % station_name, fontsize=12)
             plt.axes().xaxis.set_tick_params(labelsize=8)
             plt.axes().yaxis.set_tick_params(labelsize=8)
@@ -234,9 +252,35 @@ class Comparison:
                      fontsize=8)
             plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=200)
             plt.close()
+        return values[:, 0, :]
 
     @staticmethod
-    def plot_by_wind(wind_low_threshold, wind_up_threshold, x, y, raster_variable_name, station_name):
+    def compare_spatially(wind_directions, s2_arrays, comparison_arrays, wind_bins_low, wind_bins_up):
+        wind_directions, s2_arrays = np.float32(wind_directions), np.float32(s2_arrays)
+        comparison_arrays = np.float32(comparison_arrays)
+        shape, n_wind = wind_directions[0].shape, len(wind_bins_low)
+        correlations = np.zeros((n_wind, shape[0], shape[1]), np.float32)
+        for y in shape[0]:  # look into correlation for all dates at each cell
+            for x in shape[1]:
+                # differentiated by wind direction
+                for idx, wind_low, wind_up in zip(range(n_wind), wind_bins_low, wind_bins_up):
+                    wind_all_dates = wind_directions[:, y, x]  # wind of all dates at this cell
+                    wind_indices = np.where((wind_all_dates >= wind_low) * (wind_all_dates < wind_up))[0]
+                    if len(wind_indices) == 0:
+                        correlations[idx, y, x] = 0
+                    else:
+                        regression = linregress(s2_arrays[wind_indices, y, x], comparison_arrays[wind_indices, y, x])
+                        correlations[idx, y, x] = regression.rvalue
+        return correlations
+
+    @staticmethod
+    def scatter_plot_by_wind(wind_low_threshold, wind_up_threshold, x, y, raster_variable_name, station_name):
+        sns.set(rc={'figure.figsize': (9, 5)})
+        sns.set_theme(style="whitegrid")
+        scatter_file = os.path.join(
+            dir_comparison_plots, raster_variable_name + "_wind_%s_%s_station_%s_scatterplot.png" %
+                                  (wind_low_threshold, wind_up_threshold, station_name))
+        # scatterplot
         if len(x) == 0 or len(y) == 0:
             return
         try:
@@ -245,7 +289,7 @@ class Comparison:
             return
         regress = linregress(x, y)
         plt.plot(x, m * x + b, color="#2b2b2b")
-        plt.scatter(x, y, color="#c404ab")
+        sns.scatterplot(x, y, color="#c404ab")
         plt.axes().xaxis.set_tick_params(labelsize=8)
         plt.axes().yaxis.set_tick_params(labelsize=8)
         plt.text(np.nanquantile(x, [0.025])[0],
@@ -256,8 +300,32 @@ class Comparison:
         plt.ylabel("S2 trucks")
         plt.xlabel(raster_variable_name)
         plt.title("UBA station %s | Wind direction %s-%s" % (station_name, wind_low_threshold, wind_up_threshold))
-        plt.savefig(os.path.join(dir_comparison_plots, raster_variable_name + "_wind_%s_%s_station_%s.png" %
-                                 (wind_low_threshold, wind_up_threshold, station_name)))
+        plt.savefig(scatter_file, dpi=300)
+        plt.close()
+
+    @staticmethod
+    def line_plot_summary(dates, s2_values, comparison_arrays, uba_values, wind_values, station_name):
+        colors = ["#5e128a", "", "", "#016b05", "#06208a"]
+        names = ["Sentinel-2", "Sentinel-5P NO2 total column", "Model NO2 total column", "UBA NO2",
+                 "Wind direction"]
+        sns.set(rc={'figure.figsize': (9, 5)})
+        sns.set_theme(style="whitegrid")
+        line_file = os.path.join(
+            dir_comparison_plots, "_%s_station_%s_scatterplot.png" % station_name)
+        for values, c in zip([s2_values, comparison_arrays[comparison_variables[0]],
+                              comparison_arrays[comparison_variables[1]], uba_values, wind_values],
+                             colors):
+            values_copy = values.copy()
+            values_copy /= np.max(values_copy)
+            ax = sns.lineplot(x=dates, y=values_copy, color=c)
+        ax.xaxis.set_tick_params(labelsize=10)
+        ax.yaxis.set_tick_params(labelsize=10)
+        plt.subplots_adjust(bottom=0.2, right=0.8)
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        plt.legend(names, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
+        plt.title("Series comparison at station %s" % station_name, fontsize=12)
+        plt.tight_layout()
+        plt.savefig(line_file, dpi=300)
         plt.close()
 
     @staticmethod
