@@ -21,6 +21,7 @@ from detect_trucks.RandomForestTrucks import RFTruckDetector
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_data = os.path.join(dir_main, "data")
 dir_validation = os.path.join(dir_main, "validation")
+dir_validation_plots = os.path.join(dir_validation, "plots")
 dir_labels = os.path.join(dir_data, "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 dir_training = os.path.join(dir_main, "training")
@@ -142,20 +143,23 @@ class Validator:
                     except FileNotFoundError:
                         pass
                 if has_obs:
-                    print("Processing: %s" % sub_period[0])
-                    band_stack, folder = sh.get_data(**kwargs)  # get full data
-                    detector = RFTruckDetector()
-                    band_stack = detector.read_bands(merged_file)
-                    detector.train()
-                    detector.preprocess_bands(band_stack[0:4])
-                    detector.train()
-                    prediction = detector.predict()
-                    prediction_boxes = detector.extract_objects(prediction)
-                    try:
-                        detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-                    except ValueError:
-                        print("Number of detections: %s, cannot write" % len(prediction_boxes))
-                        continue
+                    if os.path.exists(detections_file):
+                        pass
+                    else:
+                        print("Processing: %s" % sub_period[0])
+                        band_stack, folder = sh.get_data(**kwargs)  # get full data
+                        detector = RFTruckDetector()
+                        band_stack = detector.read_bands(merged_file)
+                        detector.train()
+                        detector.preprocess_bands(band_stack[0:4])
+                        detector.train()
+                        prediction = detector.predict()
+                        prediction_boxes = detector.extract_objects(prediction)
+                        try:
+                            detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+                        except ValueError:
+                            print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                            continue
                     self.detections_file = detections_file
                     with rio.open(merged_file, "r") as src:
                         meta = src.meta
@@ -191,8 +195,10 @@ class Validator:
         if "Braunschweig-Flughafen" in self.station_name:  # rectangluar buffer due to another highway within buffer
             sy, sx = station_point.y, station_point.x
             station_buffer = box(sx - buffer_distance, sy - 1500, sx + buffer_distance, sy + 3000)
-        station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer], crs=self.detections.crs)
-        detections_in_buffer = gpd.overlay(self.detections, station_buffer_gpd, "intersection")
+        station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer],
+                                              crs="EPSG:326" + str(self.station_meta["utm_zone"]))
+        detections_in_buffer = gpd.overlay(self.detections.to_crs(station_buffer_gpd.crs),
+                                           station_buffer_gpd, "intersection")
         b = np.float32([station_point.x, station_point.y])
         s2_direction1, s2_direction2 = 0, 0
         for row in detections_in_buffer.iterrows():
@@ -458,8 +464,8 @@ class Validator:
         for i, c in enumerate(colors):
             ax = sns.lineplot(x=unique_dates, y=counts[:, i], color=c)
         labels = ["S2 direction 1", "S2 direction 2", "BAST Lzg direction 1", "BAST Lzg direction 2"]
-        plt.legend(labels, bbox_to_anchor=(1.22, 0.5), fontsize=10, loc="center right")
-        plt.subplots_adjust(bottom=0.2, right=0.85)
+        plt.legend(labels, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
+        plt.subplots_adjust(bottom=0.2, right=0.8)
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
         ax.xaxis.set_tick_params(labelsize=10)
         ax.yaxis.set_tick_params(labelsize=10)
@@ -467,7 +473,7 @@ class Validator:
         plt.title(title, fontsize=12)
         plt.tight_layout()
         fname = title.replace(" ", "_")
-        plt.savefig(os.path.join(dir_validation, "%s_lineplot.png" % fname), dpi=300)
+        plt.savefig(os.path.join(dir_validation_plots, "%s_lineplot.png" % fname), dpi=300)
         plt.close()
         # scatter
         sns.set(rc={'figure.figsize': (8, 6)})
@@ -484,7 +490,8 @@ class Validator:
         plt.xlabel("Sentinel-2 count", fontsize=10)
         plt.title("Sentinel-2 trucks vs. BAST Lzg", fontsize=12)
         plt.tight_layout()
-        plt.savefig(os.path.join(dir_validation, "%s_scatterplot.png" % fname), dpi=300)
+        plt.savefig(os.path.join(dir_validation_plots, "%s_scatterplot.png" % fname), dpi=300)
+        plt.close()
 
 
 if __name__ == "__main__":
