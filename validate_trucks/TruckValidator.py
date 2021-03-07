@@ -197,8 +197,11 @@ class Validator:
             station_buffer = box(sx - buffer_distance, sy - 1500, sx + buffer_distance, sy + 3000)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer],
                                               crs="EPSG:326" + str(self.station_meta["utm_zone"]))
-        detections_in_buffer = gpd.overlay(self.detections.to_crs(station_buffer_gpd.crs),
-                                           station_buffer_gpd, "intersection")
+        try:
+            detections_in_buffer = gpd.overlay(self.detections.to_crs(station_buffer_gpd.crs),
+                                               station_buffer_gpd, "intersection")
+        except AttributeError:
+            return
         b = np.float32([station_point.x, station_point.y])
         s2_direction1, s2_direction2 = 0, 0
         for row in detections_in_buffer.iterrows():
