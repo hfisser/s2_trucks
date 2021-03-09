@@ -9,7 +9,7 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["training"] = os.path.join(dirs["main"], "training")
 dirs["plots"] = os.path.join("F:" + os.sep + "Masterarbeit", "THESIS", "general", "plots")
 tiles_pd = pd.read_csv(os.path.join(dirs["training"], "tiles.csv"), sep=";")
-truth_pd = pd.read_csv(os.path.join(dirs["main"], "truth", "spectra_ml.csv"))
+truth_pd = pd.read_csv(os.path.join(dirs["main"], "truth", "spectra_ml_training_tiles.csv"))
 
 
 COLORS = ["#2e2e2e", "#0000ff", "#00ff00", "#ff0000"]
@@ -19,13 +19,15 @@ sns.set_theme(style="whitegrid")
 
 
 def plot_labels_relative(tiles, area_columns):
-    fig, ax = plt.subplots(figsize=(10, 3))
+    fig, ax = plt.subplots(figsize=(8, 2))
     pos, off, labels_sum = 0, 0.12, []
     colors = {"Europe": "#cbd5e8", "Africa": "#b3e2cd", "East Asia": "#fdcdac", "North America": "#fff2ae",
               "Oceania": "#e6f5c9", "South America": "#f4cae4"}
     continents_sorted = None
     for n_label_column, c, area_column in zip(["n_retain_validation", "n_retain"], ["Greens", "Purples"], area_columns):
         unique_areas = np.unique(tiles[area_column].dropna())
+        unique_tiles = np.unique(tiles[{"n_retain_validation": "validation_tiles",
+                                        "n_retain": "training_tiles"}[n_label_column]].dropna())
         n_labels = np.int16(tiles[n_label_column])
         n_sum = np.nansum(np.int16(tiles[n_label_column].dropna()))
         labels_sum.append(n_sum)
@@ -34,12 +36,13 @@ def plot_labels_relative(tiles, area_columns):
         left = 0
         argsorted = np.argsort(continents)[::-1]
         continents_sorted = np.array(continents)[argsorted]
-        for share, area, continent in zip(np.array(shares)[argsorted], unique_areas[argsorted], continents_sorted):
+        for share, area, tile, continent in zip(np.array(shares)[argsorted], unique_areas[argsorted],
+                                                unique_tiles[argsorted], continents_sorted):
             share_rounded = share - (left + share - 100) if (left + share) > 100 else share
             plt.barh(pos, share_rounded, height=0.1, color=colors[continent], left=left, edgecolor="black",
                      label=continent)
-            text = ax.text(left + share_rounded * 0.5, pos, area.replace(" ", "\n"), ha="center", va="center",
-                           color="black", fontsize=8)
+            text = ax.text(left + share_rounded * 0.5, pos, area.replace(" ", "\n") + "\n%s" % tile,
+                           ha="center", va="center", color="black", fontsize=8)
             left += share
         pos += off
     ax.set_yticks([0, off])
@@ -53,14 +56,14 @@ def plot_labels_relative(tiles, area_columns):
     handles, labels = ax.get_legend_handles_labels()
     by_label = OrderedDict(zip(labels, handles))
     plt.subplots_adjust(right=0.9)  # for legend
-    plt.legend(by_label.values(), by_label.keys(), loc="center right", bbox_to_anchor=(1.2, 0.5),
+    plt.legend(by_label.values(), by_label.keys(), loc="center right", bbox_to_anchor=(1.25, 0.5),
                fontsize=8)
     #plt.legend(by_label.values(), by_label.keys(), loc="center right", bbox_to_anchor=(1.25, 0.5))
     plt.xlim(0, 100)
     plt.xlabel("Share of labels [%]", fontsize=8)
-    plt.title("Labels by country", fontsize=12)
+ #   plt.title("Labels by country", fontsize=12)
     plt.tight_layout()
-    plt.savefig(os.path.join(dirs["plots"], "training_validation_%s.png" % area_columns[0]), dpi=300)
+    plt.savefig(os.path.join(dirs["plots"], "training_validation_%s.png" % area_columns[0]), dpi=600)
     plt.close()
 
 
