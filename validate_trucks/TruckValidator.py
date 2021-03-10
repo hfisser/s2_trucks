@@ -26,6 +26,7 @@ dir_labels = os.path.join(dir_data, "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 dir_training = os.path.join(dir_main, "training")
 dir_s2_subsets = os.path.join(dir_data, "s2", "subsets")
+dir_s2_subsets = "C:\\Users\\Lenovo\\Documents\\subsets"
 truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
 aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
 boxes_validation_file = os.path.join(dir_validation, "boxes_validation.csv")
@@ -42,7 +43,7 @@ OSM_BUFFER = 20
 hour, minutes, year = 10, 20, 2018
 
 validate = "boxes"
-validate = "bast"
+#validate = "bast"
 
 stations = dict()
 bast_dir = os.path.dirname(aois_file)
@@ -289,11 +290,10 @@ class Validator:
             # read labels
             validation_boxes = gpd.read_file(os.path.join(dir_labels,
                                                           os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
-            prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes")
+            prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes.gpkg")
             try:
                 prediction_boxes = gpd.read_file(prediction_boxes_file)  # read if yet processed
             except DriverError:
-                # detect on whole array
                 rf_td = RFTruckDetector()
                 band_data = rf_td.read_bands(img_file)
                 lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
@@ -309,28 +309,39 @@ class Validator:
                 rf_td.prediction_raster_to_gtiff(prediction_array,
                                                  os.path.join(self.dirs["detections"], name + "_raster"))
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, prediction_boxes_file)
-            producer_n, user_n = 0, 0
-            percentage_intersection = []
-            for prediction_box in prediction_boxes.geometry:
-                for validation_box in validation_boxes.geometry:
-                    if prediction_box.intersects(validation_box):
-                        difference = prediction_box.difference(validation_box)
-                        percentage_intersection.append((prediction_box.area - difference.area) / prediction_box.area)
-                        producer_n += 1
-                        break
-            for validation_box in validation_boxes.geometry:
-                for prediction_box in prediction_boxes.geometry:
-                    if validation_box.intersects(prediction_box):
-                        user_n += 1
-                        break
+            prediction_boxes = gpd.read_file(prediction_boxes_file)
             prediction_array, band_data, rf_td = None, None, None
-            row_idx = len(boxes_validation_pd)
-            boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
-            boxes_validation_pd.loc[row_idx, "producer_percentage"] = producer_n / len(prediction_boxes) * 100
-            boxes_validation_pd.loc[row_idx, "user_percentage"] = user_n / len(validation_boxes) * 100
-            boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes)
-            boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
-            boxes_validation_pd.loc[row_idx, "mean_area_intersection"] = np.mean(percentage_intersection)
+            # iterate over score thresholds and plot precision and recall curve
+            for score_threshold in np.arange(0, 3, 0.15):
+                prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
+                producer_positive, user_positive = 0, 0
+                percentage_intersection = []
+                for prediction_box in prediction_boxes.geometry:
+                    for validation_box in validation_boxes.geometry:
+                        if prediction_box.intersects(validation_box):
+                            difference = prediction_box.difference(validation_box)
+                            percentage_intersection.append((prediction_box.area - difference.area) / prediction_box.area)
+                            producer_positive += 1
+                            break
+                for validation_box in validation_boxes.geometry:
+                    for prediction_box in prediction_boxes.geometry:
+                        if validation_box.intersects(prediction_box):
+                            user_positive += 1
+                            break
+                try:
+                    precision = producer_positive / len(prediction_boxes)
+                except ZeroDivisionError:
+                    precision = 0
+                false_negative = len(validation_boxes) - user_positive
+                recall = producer_positive / (producer_positive + false_negative)
+                row_idx = len(boxes_validation_pd)
+                boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
+                boxes_validation_pd.loc[row_idx, "precision"] = precision
+                boxes_validation_pd.loc[row_idx, "recall"] = recall
+                boxes_validation_pd.loc[row_idx, "score_threshold"] = score_threshold
+                boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes)
+                boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
+                boxes_validation_pd.loc[row_idx, "mean_area_intersection"] = np.mean(percentage_intersection)
         boxes_validation_pd.to_csv(boxes_validation_file)
 
     @staticmethod
@@ -512,6 +523,30 @@ if __name__ == "__main__":
         validator = Validator(station, aois_file, dir_validation, dir_osm)
         if validate == "boxes":
             validator.validate_boxes()
+            boxes_validation = pd.read_csv(boxes_validation_file)
         else:
             print("%s\nStation: %s" % ("-" * 50, station))
             validator.validate_acquisition_wise(acquisition_period)
+
+#"""
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+sns.set(rc={'figure.figsize': (9, 5)})
+sns.set_theme(style="white")
+#fig, ax = plt.subplots()
+unique_files = np.unique(boxes_validation["detection_file"])
+for file in unique_files:
+    boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
+    precision = np.float32(boxes_validation_subset["precision"])
+    recall = np.float32(boxes_validation_subset["recall"])
+    scores = np.float32(boxes_validation_subset["score_threshold"])
+    mask = np.int8(recall == 0) + np.int8(precision == 0) > 0
+    precision[mask == 1] = np.nan
+    recall[mask == 1] = np.nan
+   # plt.plot(recall, precision)
+    ax = sns.lineplot(y=precision, x=recall)
+   # ax = sns.lineplot(y=np.float32(boxes_validation_subset["precision"][:-5]),
+   #                   x=np.float32(boxes_validation_subset["score_threshold"][:-5]))
+plt.legend([f.split("_")[-5] for f in unique_files])
+#"""
