@@ -12,6 +12,7 @@ from shapely.geometry import Point, box
 from fiona.errors import DriverError
 from datetime import date, timedelta
 from scipy.stats import linregress
+from sklearn.metrics import auc
 from osm_utils.utils import get_roads
 from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
@@ -312,7 +313,7 @@ class Validator:
             prediction_boxes = gpd.read_file(prediction_boxes_file)
             prediction_array, band_data, rf_td = None, None, None
             # iterate over score thresholds and plot precision and recall curve
-            for score_threshold in np.arange(0, 3, 0.15):
+            for score_threshold in np.arange(0, 4, 0.25):
                 prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
                 producer_positive, user_positive = 0, 0
                 percentage_intersection = []
@@ -507,6 +508,41 @@ class Validator:
         plt.savefig(os.path.join(dir_validation_plots, "%s_scatterplot.png" % fname), dpi=300)
         plt.close()
 
+    @staticmethod
+    def plot_box_validation_recall_precision(box_validation_csv):
+        boxes_validation = pd.read_csv(box_validation_csv)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        unique_files = np.unique(boxes_validation["detection_file"])
+        countries = {"T34UDC": "Poland", "T29SND": "Portugal", "T31UFS": "Belgium", "T33TUN": "Austria",
+                     "T35TMK": "Romania", "T37MCT": "Kenya", "T52SDE": "South Korea", "T12SUC": "USA",
+                     "T60HUD": "New Zealand", "T21HUB": "Argentina"}
+        offsets = (- 0.1, 0, 0, 0.01, -0.09, 0, 0, 0, 0, 0)
+        labels, aucs = [], []
+        for idx, file in enumerate(unique_files):
+            tile = file.split("_")[-5]
+            labels.append(tile + " (%s)" % countries[tile])
+            boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
+            precision = np.float32(boxes_validation_subset["precision"])
+            recall = np.float32(boxes_validation_subset["recall"])
+            scores = np.float32(boxes_validation_subset["score_threshold"])
+            p = plt.plot(recall, precision)
+            a = np.round(auc(recall, precision), 2)
+            y_pos = np.min(precision[precision != 0]) - 0.03
+            y_pos = 1.02 if np.abs(y_pos - 1) < 0.02 else y_pos
+            plt.text(np.max(recall) + offsets[idx] + 0.01, y_pos, "AUC=%s" % a,
+                     fontsize=10, color=p[0].get_color())
+            aucs.append(a)
+        plt.text(0.75, 0.03,
+                 "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
+                 fontsize=10)
+        plt.ylim(0, 1)
+        plt.xlim(0, 1)
+        plt.ylabel("Precision", fontsize=10)
+        plt.xlabel("Recall", fontsize=10)
+        plt.subplots_adjust(right=0.7)
+        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
+        plt.savefig(os.path.join(dir_validation_plots, "auc_box_validation_lineplot.png"), dpi=600)
+        plt.close()
 
 if __name__ == "__main__":
     if validate == "bast":
@@ -523,30 +559,11 @@ if __name__ == "__main__":
         validator = Validator(station, aois_file, dir_validation, dir_osm)
         if validate == "boxes":
             validator.validate_boxes()
-            boxes_validation = pd.read_csv(boxes_validation_file)
+            validator.plot_box_validation_recall_precision(boxes_validation_file)
         else:
             print("%s\nStation: %s" % ("-" * 50, station))
             validator.validate_acquisition_wise(acquisition_period)
 
-#"""
-import seaborn as sns
-import matplotlib.pyplot as plt
 
-sns.set(rc={'figure.figsize': (9, 5)})
-sns.set_theme(style="white")
-#fig, ax = plt.subplots()
-unique_files = np.unique(boxes_validation["detection_file"])
-for file in unique_files:
-    boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
-    precision = np.float32(boxes_validation_subset["precision"])
-    recall = np.float32(boxes_validation_subset["recall"])
-    scores = np.float32(boxes_validation_subset["score_threshold"])
-    mask = np.int8(recall == 0) + np.int8(precision == 0) > 0
-    precision[mask == 1] = np.nan
-    recall[mask == 1] = np.nan
-   # plt.plot(recall, precision)
-    ax = sns.lineplot(y=precision, x=recall)
-   # ax = sns.lineplot(y=np.float32(boxes_validation_subset["precision"][:-5]),
-   #                   x=np.float32(boxes_validation_subset["score_threshold"][:-5]))
-plt.legend([f.split("_")[-5] for f in unique_files])
-#"""
+
+
