@@ -70,7 +70,7 @@ class Comparison:
         self.bbox = gpd.read_file(aoi_file_path).to_crs("EPSG:4326").geometry.bounds
 
     def run_comparison(self):
-        detection_files = []
+        detection_files, uba_no2_arrays = [], []
         for date in self.dates:
             print(date)
             sh = SentinelHub()
@@ -80,17 +80,14 @@ class Comparison:
             split = file_str.split("_")
             d, m, y = split[-3], split[-2], split[-1]
             merged_file = os.path.join(dir_validation_data, "s2_bands_%s.tiff" % file_str)
-            if os.path.exists(merged_file):
-                pass
-            else:
+            detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
+            if os.path.exists(merged_file) or os.path.exists(detections_file):
+                detection_files.append(detections_file)
+            elif not os.path.exists(merged_file):
                 band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
                                                  ["B04", "B03", "B02", "B08", "CLM"], resolution, dir_validation_data,
                                                  merged_file)
                 band_stack = None
-            detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
-            detection_files.append(detections_file)
-            if os.path.exists(detections_file):
-                pass
             else:
                 rf_td = RFTruckDetector()
                 band_stack = rf_td.read_bands(merged_file)
@@ -99,11 +96,9 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-        uba_no2 = self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
+        uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
         for comparison_variable in comparison_variables:
-            variables_dict = self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2)
-        self.line_plot_summary(self.dates, variables_dict["s2"], variables_dict["comparison"], uba_no2,
-                               variables_dict["wind"], variables_dict["station_names"])
+            self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2_arrays)
 
     def plot_s2_series(self):
         weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
@@ -132,20 +127,20 @@ class Comparison:
         plt.close()
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
-    def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_values):
-        wind_bins_low = np.arange(0, 360, 90, dtype=np.float32)  # wind directions
-        wind_bins_up = np.arange(90, 361, 90, dtype=np.float32)
+    def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_arrays):
+        wind_bins_low = np.arange(0, 181, 180, dtype=np.float32)  # wind directions
+        wind_bins_up = np.arange(180, 361, 180, dtype=np.float32)
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
-        wind_arrays, s2_arrays, comparison_arrays, station_names = [], [], [], []  # all timestamps
-        meta = None
+        var0, var1 = comparison_variables[0], comparison_variables[1]
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
-            station_names.append(row.name)
             station_point = Point([row.lon, row.lat])
             # iterate over dates, get numbers for each date by wind direction
             observation_dict = {}
             for wind_low in wind_bins_low:
                 observation_dict[str(wind_low)] = {"comparison": [], "s2": []}
+            wind_arrays, s2_arrays, comparison_arrays, dates = [], [], {var0: [], var1: []}, []  # all timestamps
+            meta, x_station, y_station = None, None, None
             for date, detections_file in zip(self.dates, detection_files):
                 date_compact = date[-4:] + date[3:5] + date[0:2]
                 try:
@@ -153,16 +148,16 @@ class Comparison:
                         dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[0]
                 except IndexError:
                     continue
+                else:
+                    dates.append(date)
                 print("Reading: %s" % comparison_raster_file)
                 reference_array = xr.open_dataset(comparison_raster_file)
-                comparison_arrays.append(reference_array)
                 lon, lat = reference_array.lon.values, reference_array.lat.values
                 # location in array
                 x_station = np.argmin(np.abs(lon - station_point.x))
                 y_station = np.argmin(np.abs(lat - station_point.y))
                 comparison_array = reference_array[raster_variable_name].values
-                wind = xr.open_dataset(
-                    os.path.join(dir_comparison_wind, "Wind_U_V_%s.nc" % date_compact))
+                wind = xr.open_dataset(os.path.join(dir_comparison_wind, "Wind_U_V_%s.nc" % date_compact))
                 wind_direction = self.calc_wind_direction(wind)
                 wind_direction[np.isnan(comparison_array)] = np.nan
                 detections = gpd.read_file(detections_file)
@@ -176,6 +171,10 @@ class Comparison:
                 else:
                     s2_trucks_array = self.rasterize_s2_detections(
                         detections, reference_array, raster_variable_name, detections_raster_file)
+                s2_arrays.append(s2_trucks_array.copy())
+                wind_arrays.append(wind_direction.copy())
+                comparison_arrays[var0].append(reference_array[var0].values.copy())
+                comparison_arrays[var1].append(reference_array[var1].values.copy())
                 comparison_array[s2_trucks_array < 1] = np.nan
                 s2_trucks_array[np.isnan(comparison_array)] = np.nan
                 shape = comparison_array.shape
@@ -193,21 +192,38 @@ class Comparison:
                         else:
                             observation_dict[str(wind_low)]["comparison"].append(values[0])
                             observation_dict[str(wind_low)]["s2"].append(values[1])
-                wind_arrays.append(wind_direction)
-                s2_arrays.append(s2_trucks_array)
             # plot values of all dates at this station by wind direction
             for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
                 x = np.float32(observation_dict[str(wind_low)]["s2"])
                 y = np.float32(observation_dict[str(wind_low)]["comparison"])
                 self.scatter_plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
-        # spatial comparison
-        correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays, wind_bins_low, wind_bins_up)
-        meta["count"], meta["dtype"] = correlations.shape[0], np.float32
-        correlations_file = os.path.join(dir_comparison_plots, "spatial_correlations_%s.tiff" % raster_variable_name)
-        with rio.open(correlations_file, "w", **meta) as tgt:
-            for idx in range(meta["count"]):
-                tgt.write(correlations[idx].astype(np.float32), idx + 1)
-        return {"wind": wind_arrays, "s2": s2_arrays, "comparison": comparison_arrays, "station_names": station_names}
+            # spatial comparison
+            if raster_variable_name == comparison_variables[1]:
+                correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays,
+                                                      wind_bins_low, wind_bins_up, dates, raster_variable_name)
+                meta["count"], meta["dtype"] = correlations.shape[0], np.float32
+           #     correlations_file = os.path.join(dir_comparison_plots,
+            #                                     "spatial_correlations_%s.tiff" % raster_variable_name)
+             #   with rio.open(correlations_file, "w", **meta) as tgt:
+              #      for idx in range(meta["count"]):
+               #         tgt.write(correlations[idx].astype(np.float32), idx + 1)
+            comparison_values_list = list(comparison_arrays.values())
+            ymin, ymax = int(np.clip(y_station - 1, 0, np.inf)), int(np.clip(y_station + 2, 0, np.inf))
+            xmin, xmax = int(np.clip(x_station - 1, 0, np.inf)), int(np.clip(x_station + 2, 0, np.inf))
+            comparison_at_station = np.zeros((2, np.float32(comparison_arrays[var0]).shape[0]))
+            for i in range(comparison_at_station.shape[1]):
+                comparison_at_station[0, i] = np.nanmean(np.float32(comparison_arrays[var0])[i, ymin:ymax, xmin:xmax])
+                comparison_at_station[1, i] = np.nanmean(np.float32(comparison_arrays[var1])[i, ymin:ymax, xmin:xmax])
+            uba_values = []
+            for date_idx, date in enumerate(self.dates):  # more dates in uba arrays than in other data, sort out
+                if date in dates:
+                    uba_values.append(uba_no2_arrays[row_idx, date_idx])
+            s2_arrays = np.float32(s2_arrays)
+            # mean in window at station
+            s2_window_mean = [np.nanmean(s2_arrays[i, ymin:ymax, xmin:xmax]) for i in range(s2_arrays.shape[0])]
+            wind_mean = [np.nanmean(wind_arrays[i][ymin:ymax, xmin:xmax]) for i in range(len(wind_arrays))]
+            self.line_plot_summary(dates, np.float32(s2_window_mean),
+                                   comparison_at_station, np.float32(uba_values), np.float32(wind_mean), row.name)
 
     def compare_insitu_no2(self, detection_files):
         crs = gpd.read_file(detection_files[0]).crs
@@ -255,13 +271,17 @@ class Comparison:
         return values[:, 0, :]
 
     @staticmethod
-    def compare_spatially(wind_directions, s2_arrays, comparison_arrays, wind_bins_low, wind_bins_up):
-        wind_directions, s2_arrays = np.float32(wind_directions), np.float32(s2_arrays)
-        comparison_arrays = np.float32(comparison_arrays)
+    def compare_spatially(wind_directions, s2_values, comparison_values, wind_bins_low, wind_bins_up, dates,
+                          variable_name):
+        comparison_var0 = np.float32(comparison_values[variable_name])
+        comparison_var1_name = comparison_variables[0] if variable_name == comparison_variables[1] else comparison_variables[1]
+        comparison_var1 = np.float32(comparison_values[comparison_var1_name])
+        dates = np.array(["-".join([d.split("-")[2], d.split("-")[1], d.split("-")[0]]) for d in dates])
+        wind_directions, s2_values = np.float32(wind_directions), np.float32(s2_values)
         shape, n_wind = wind_directions[0].shape, len(wind_bins_low)
         correlations = np.zeros((n_wind, shape[0], shape[1]), np.float32)
-        for y in shape[0]:  # look into correlation for all dates at each cell
-            for x in shape[1]:
+        for y in range(shape[0]):  # look into correlation for all dates at each cell
+            for x in range(shape[1]):
                 # differentiated by wind direction
                 for idx, wind_low, wind_up in zip(range(n_wind), wind_bins_low, wind_bins_up):
                     wind_all_dates = wind_directions[:, y, x]  # wind of all dates at this cell
@@ -269,14 +289,52 @@ class Comparison:
                     if len(wind_indices) == 0:
                         correlations[idx, y, x] = 0
                     else:
-                        regression = linregress(s2_arrays[wind_indices, y, x], comparison_arrays[wind_indices, y, x])
-                        correlations[idx, y, x] = regression.rvalue
+                        var_s2, var0 = s2_values[wind_indices, y, x], comparison_var0[wind_indices, y, x]
+                        if len(var_s2) < 5:
+                            rvalue = 0
+                        else:
+                            rvalue = linregress(var_s2, var0).rvalue
+                        correlations[idx, y, x] = rvalue
+        # plot at positions where correlation high
+        indices = np.where(correlations > 0.75)
+        for idx, y, x in zip(indices[0], indices[1], indices[2]):
+            wind_low, wind_up = wind_bins_low[idx], wind_bins_up[idx]
+            wind_all_dates = wind_directions[:, y, x]  # wind of all dates at this cell
+            wind_indices = np.where((wind_all_dates >= wind_low) * (wind_all_dates < wind_up))[0]
+            sns.set(rc={"figure.figsize": (8, 4)})
+            sns.set_theme(style="white")
+            var_s2 = s2_values[wind_indices, y, x].copy()
+            var_s2 /= np.nanmax(var_s2)
+            var0 = comparison_var0[wind_indices, y, x]
+            var0 /= np.nanmax(var0)
+            var1 = comparison_var1[wind_indices, y, x]
+            rsquared_var1 = np.round(linregress(s2_values[wind_indices, y, x], var1).rvalue, 2)
+            var1 /= np.nanmax(var1)
+            selected_dates = dates[wind_indices]
+            ax = sns.lineplot(selected_dates, var_s2)
+            ax = sns.lineplot(selected_dates, var0)
+            ax = sns.lineplot(selected_dates, var1)
+            plt.ylabel("Values normalized by max", fontsize=10)
+            plt.tick_params(labelsize=10)
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+            plt.subplots_adjust(bottom=0.2, left=0.1, right=0.7)
+            plt.legend(["Sentinel-2 trucks"] + comparison_variables, fontsize=10, loc="center right",
+                       bbox_to_anchor=(1.5, 0.5))
+            plt.text(len(selected_dates) - 0.7, 0.8, "r-squared S2 vs.\n%s=%s\nS2 vs. %s=%s" % (
+                variable_name, np.round(correlations[idx, y, x], 2), comparison_var1_name, rsquared_var1),
+                     fontsize=8)
+            plt.title("S2 trucks vs. %s and %s at position y=%s, x=%s" % (comparison_variables[0],
+                                                                          comparison_variables[1], y, x))
+            fname = "s2_vs_%s_wind_%s_%s_y%s_x%s_lineplot.png"
+            plt.savefig(os.path.join(dir_comparison_plots, fname % (variable_name, wind_low, wind_up, y, x)),
+                        dpi=600)
+            plt.close()
         return correlations
 
     @staticmethod
     def scatter_plot_by_wind(wind_low_threshold, wind_up_threshold, x, y, raster_variable_name, station_name):
         sns.set(rc={'figure.figsize': (9, 5)})
-        sns.set_theme(style="whitegrid")
+        sns.set_theme(style="white")
         scatter_file = os.path.join(
             dir_comparison_plots, raster_variable_name + "_wind_%s_%s_station_%s_scatterplot.png" %
                                   (wind_low_threshold, wind_up_threshold, station_name))
@@ -305,27 +363,38 @@ class Comparison:
 
     @staticmethod
     def line_plot_summary(dates, s2_values, comparison_arrays, uba_values, wind_values, station_name):
-        colors = ["#5e128a", "", "", "#016b05", "#06208a"]
-        names = ["Sentinel-2", "Sentinel-5P NO2 total column", "Model NO2 total column", "UBA NO2",
-                 "Wind direction"]
-        sns.set(rc={'figure.figsize': (9, 5)})
-        sns.set_theme(style="whitegrid")
-        line_file = os.path.join(
-            dir_comparison_plots, "_%s_station_%s_scatterplot.png" % station_name)
-        for values, c in zip([s2_values, comparison_arrays[comparison_variables[0]],
-                              comparison_arrays[comparison_variables[1]], uba_values, wind_values],
-                             colors):
-            values_copy = values.copy()
+        dates = ["-".join([d.split("-")[2], d.split("-")[1], d.split("-")[0]]) for d in dates]
+        colors = ["#5e128a", "#bbe63f", "#5f8000", "#016b05", "#0caab4"]
+        names = ["Sentinel-2", "Sentinel-5P NO2 total column", "Model NO2 total column", "UBA NO2"]#, "Wind direction"]
+        sns.set(rc={"figure.figsize": (9, 5)})
+        sns.set_theme(style="white")
+        line_file = os.path.join(dir_comparison_plots, "station_%s_lineplot.png" % station_name)
+        not_nan = ~np.isnan(s2_values) * ~np.isnan(comparison_arrays[0])
+        s2_no_nan = s2_values[not_nan]
+        correlation_with_s5p = np.round(linregress(s2_no_nan, comparison_arrays[0][not_nan]).rvalue, 2)
+        correlation_with_model = np.round(linregress(s2_no_nan, comparison_arrays[1][not_nan]).rvalue, 2)
+        try:
+            correlation_with_uba = np.round(linregress(s2_no_nan, uba_values[not_nan]).rvalue, 2)
+        except ValueError:
+            correlation_with_uba = np.zeros_like(s2_no_nan)
+        for values, c in zip([s2_values, comparison_arrays[0], comparison_arrays[1], uba_values], colors):
+            values_copy = values.copy().flatten()
+            values_copy[~not_nan] = 0
             values_copy /= np.max(values_copy)
-            ax = sns.lineplot(x=dates, y=values_copy, color=c)
+            ax = sns.lineplot(x=np.array(dates)[not_nan], y=values_copy[not_nan], color=c)
+        txt = "r-squared S2 vs. S5p=%s\nr-squared S2 vs. Model=%s\nr-squared S2 vs. UBA=%s"
+        ax.text(np.count_nonzero(not_nan), 0.8, txt % (correlation_with_s5p, correlation_with_model,
+                                                       correlation_with_uba),
+                fontsize=10)
         ax.xaxis.set_tick_params(labelsize=10)
         ax.yaxis.set_tick_params(labelsize=10)
-        plt.subplots_adjust(bottom=0.2, right=0.8)
+        plt.ylabel("Values normalized by max", fontsize=10)
+        plt.subplots_adjust(bottom=0.2, right=0.75)
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-        plt.legend(names, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
-        plt.title("Series comparison at station %s" % station_name, fontsize=12)
+        plt.legend(names, bbox_to_anchor=(1.45, 0.5), fontsize=10, loc="center right")
+        plt.title("Series S2 trucks, S5P and Model total NO2 column comparison at station %s" % station_name, fontsize=12)
         plt.tight_layout()
-        plt.savefig(line_file, dpi=300)
+        plt.savefig(line_file, dpi=600)
         plt.close()
 
     @staticmethod
@@ -379,7 +448,7 @@ class Comparison:
                 offset = 90 if all([vector[0] < 0, vector[1] > 0]) else offset
                 offset += 90 if all([vector[0] > 0, vector[1] < 0]) else 0
                 if vector[0] == 0:
-                    direction = 0.
+                    direction = -1
                 else:
                     direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0]))) + offset
                 meteorological_direction = direction - 180 if direction >= 180 else direction + 180
@@ -403,7 +472,7 @@ class Comparison:
         for detection_file, date in zip(detection_files, dates):
             validator.date = date.split(" (")[0]
             validator.detections_file = detection_file
-            validator.validate_with_bast()
+            validator.validate_with_bast(date, detection_file, validator.station_file, "")
         comparison_pd = pd.read_csv(validator.validation_file)
         station_counts = [np.float32(comparison_pd[column]) for column in ["Lzg_R1", "Lzg_R2"]]
         s2_counts = [np.float32(comparison_pd[column]) for column in ["s2_direction1", "s2_direction2"]]
@@ -435,5 +504,5 @@ if __name__ == "__main__":
         os.mkdir(dir_comparison_detections)
     comparison = Comparison(process_dates, aoi_file)
     comparison.run_comparison()
-    comparison.plot_s2_series()
+  #  comparison.plot_s2_series()
     print("Done")
