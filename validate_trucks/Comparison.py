@@ -198,15 +198,14 @@ class Comparison:
                 y = np.float32(observation_dict[str(wind_low)]["comparison"])
                 self.scatter_plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
             # spatial comparison
-            if raster_variable_name == comparison_variables[1]:
-                correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays,
-                                                      wind_bins_low, wind_bins_up, dates, raster_variable_name)
-                meta["count"], meta["dtype"] = correlations.shape[0], np.float32
-           #     correlations_file = os.path.join(dir_comparison_plots,
-            #                                     "spatial_correlations_%s.tiff" % raster_variable_name)
-             #   with rio.open(correlations_file, "w", **meta) as tgt:
-              #      for idx in range(meta["count"]):
-               #         tgt.write(correlations[idx].astype(np.float32), idx + 1)
+            correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays,
+                                                  wind_bins_low, wind_bins_up, dates, raster_variable_name)
+            meta["count"], meta["dtype"] = correlations.shape[0], np.float32
+            correlations_file = os.path.join(dir_comparison_plots,
+                                             "spatial_correlations_%s.tiff" % raster_variable_name)
+      #      with rio.open(correlations_file, "w", **meta) as tgt:
+       #         for idx in range(meta["count"]):
+        #            tgt.write(correlations[idx].astype(np.float32), idx + 1)
             comparison_values_list = list(comparison_arrays.values())
             ymin, ymax = int(np.clip(y_station - 1, 0, np.inf)), int(np.clip(y_station + 2, 0, np.inf))
             xmin, xmax = int(np.clip(x_station - 1, 0, np.inf)), int(np.clip(x_station + 2, 0, np.inf))
@@ -263,7 +262,7 @@ class Comparison:
             plt.axes().xaxis.set_tick_params(labelsize=8)
             plt.axes().yaxis.set_tick_params(labelsize=8)
             plt.text(np.nanquantile(x, [0.025])[0],
-                     np.nanquantile(y, [0.95])[0], "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
+                     np.nanquantile(y, [0.95])[0], "Lin. regression\nr-value: %s\nslope: %s" % (np.round(regress.rvalue, 2),
                                                                              np.round(regress.slope, 2)),
                      fontsize=8)
             plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=200)
@@ -273,13 +272,14 @@ class Comparison:
     @staticmethod
     def compare_spatially(wind_directions, s2_values, comparison_values, wind_bins_low, wind_bins_up, dates,
                           variable_name):
-        comparison_var0 = np.float32(comparison_values[variable_name])
-        comparison_var1_name = comparison_variables[0] if variable_name == comparison_variables[1] else comparison_variables[1]
-        comparison_var1 = np.float32(comparison_values[comparison_var1_name])
+        var_name0, var_name1 = comparison_variables[0], comparison_variables[1]
+        comparison_var0 = np.float32(comparison_values[var_name0])
+        comparison_var1 = np.float32(comparison_values[var_name1])
         dates = np.array(["-".join([d.split("-")[2], d.split("-")[1], d.split("-")[0]]) for d in dates])
         wind_directions, s2_values = np.float32(wind_directions), np.float32(s2_values)
         shape, n_wind = wind_directions[0].shape, len(wind_bins_low)
         correlations = np.zeros((n_wind, shape[0], shape[1]), np.float32)
+        target_comparison_var = np.float32(comparison_values[variable_name])
         for y in range(shape[0]):  # look into correlation for all dates at each cell
             for x in range(shape[1]):
                 # differentiated by wind direction
@@ -289,8 +289,8 @@ class Comparison:
                     if len(wind_indices) == 0:
                         correlations[idx, y, x] = 0
                     else:
-                        var_s2, var0 = s2_values[wind_indices, y, x], comparison_var0[wind_indices, y, x]
-                        if len(var_s2) < 5:
+                        var_s2, var0 = s2_values[wind_indices, y, x], target_comparison_var[wind_indices, y, x]
+                        if len(var_s2) < 5 or np.count_nonzero(var_s2 != 0) == 0:
                             rvalue = 0
                         else:
                             rvalue = linregress(var_s2, var0).rvalue
@@ -308,7 +308,7 @@ class Comparison:
             var0 = comparison_var0[wind_indices, y, x]
             var0 /= np.nanmax(var0)
             var1 = comparison_var1[wind_indices, y, x]
-            rsquared_var1 = np.round(linregress(s2_values[wind_indices, y, x], var1).rvalue, 2)
+            r_var1 = np.round(linregress(s2_values[wind_indices, y, x], var1).rvalue, 2)
             var1 /= np.nanmax(var1)
             selected_dates = dates[wind_indices]
             ax = sns.lineplot(selected_dates, var_s2)
@@ -320,8 +320,8 @@ class Comparison:
             plt.subplots_adjust(bottom=0.2, left=0.1, right=0.7)
             plt.legend(["Sentinel-2 trucks"] + comparison_variables, fontsize=10, loc="center right",
                        bbox_to_anchor=(1.5, 0.5))
-            plt.text(len(selected_dates) - 0.7, 0.8, "r-squared S2 vs.\n%s=%s\nS2 vs. %s=%s" % (
-                variable_name, np.round(correlations[idx, y, x], 2), comparison_var1_name, rsquared_var1),
+            plt.text(len(selected_dates) - 0.7, 0.8, "r-value S2 vs.\n%s=%s\n%s=%s" % (
+                var_name0, np.round(correlations[idx, y, x], 2), var_name1, r_var1),
                      fontsize=8)
             plt.title("S2 trucks vs. %s and %s at position y=%s, x=%s" % (comparison_variables[0],
                                                                           comparison_variables[1], y, x))
@@ -352,7 +352,7 @@ class Comparison:
         plt.axes().yaxis.set_tick_params(labelsize=8)
         plt.text(np.nanquantile(x, [0.025])[0],
                  np.nanquantile(y, [0.9])[0],
-                 "Lin. regression\nrsquared: %s\nslope: %s" % (np.round(regress.rvalue, 2),
+                 "Lin. regression\nr-value: %s\nslope: %s" % (np.round(regress.rvalue, 2),
                                                                np.round(regress.slope, 2)),
                  fontsize=8)
         plt.ylabel("S2 trucks")
@@ -382,7 +382,7 @@ class Comparison:
             values_copy[~not_nan] = 0
             values_copy /= np.max(values_copy)
             ax = sns.lineplot(x=np.array(dates)[not_nan], y=values_copy[not_nan], color=c)
-        txt = "r-squared S2 vs. S5p=%s\nr-squared S2 vs. Model=%s\nr-squared S2 vs. UBA=%s"
+        txt = "r-value S2 vs. S5p=%s\nr-value S2 vs. Model=%s\nr-value S2 vs. UBA=%s"
         ax.text(np.count_nonzero(not_nan), 0.8, txt % (correlation_with_s5p, correlation_with_model,
                                                        correlation_with_uba),
                 fontsize=10)
@@ -407,8 +407,10 @@ class Comparison:
     @staticmethod
     def rasterize_s2_detections(detections, reference_array, raster_variable_name, raster_file):
         lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
-        lat_resolution = np.mean(lat[1:] - lat[:-1])
-        lon_resolution = np.mean(lon[1:] - lon[:-1])
+        lat_resolution = (lat[-1] - lat[0]) / len(lat)
+        lon_resolution = (lon[-1] - lon[0]) / len(lon)
+        # lat and lon for boxes
+        lat, lon = np.arange(lat[0], lat[-1], lat_resolution), np.arange(lon[0], lon[-1], lon_resolution)
         box_str = "_".join([str(np.min(coord)) + "_" + str(np.max(coord)) for coord in [lat, lon]])
         raster_file = raster_file.replace("BOX_STR", box_str)
         comparison_array = reference_array[raster_variable_name].values
@@ -418,11 +420,11 @@ class Comparison:
             for x in range(s2_trucks_array.shape[1]):
                 ymin, xmin = lat[y], lon[x]
                 try:
-                    ymax = lat[y + 1]
+                    ymax = lat[y + 100]
                 except IndexError:
                     ymax = lat[y] + lat_resolution
                 try:
-                    xmax = lon[x + 1]
+                    xmax = lon[x + 100]
                 except IndexError:
                     xmax = lon[x] + lon_resolution
                 cell_box_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[box(xmin, ymin, xmax, ymax)],
@@ -431,6 +433,7 @@ class Comparison:
         # trucks raster to gtiff
         meta = dict(dtype=np.float32, count=1, crs=detections.crs, height=s2_trucks_array.shape[0],
                     width=s2_trucks_array.shape[1], driver="GTiff", nodata=None)
+        lat, lon = reference_array.lat.values[::-1], reference_array.lon.values
         meta["transform"] = rio.transform.from_bounds(np.min(lon), np.min(lat), np.max(lon), np.max(lat), len(lon),
                                                       len(lat))
         with rio.open(raster_file, "w", **meta) as tgt:
