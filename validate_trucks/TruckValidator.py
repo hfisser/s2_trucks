@@ -109,7 +109,7 @@ class Validator:
                 self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
                 continue
             kwargs = dict(bbox=sh_bbox, period=sub_period, dataset=DataCollection.SENTINEL2_L2A,
-                          bands=["B04", "B03", "B02", "B08", "CLM"], resolution=resolution, dir_save=self.dirs["s2"],
+                          bands=["B04", "B03", "B02", "B08"], resolution=resolution, dir_save=self.dirs["s2"],
                           merged_file=merged_file, mosaicking_order="leastCC")
             data_yet_there, sh = os.path.exists(merged_file), SentinelHub()
             obs_file = os.path.join(dir_save_archive, "obs.csv")  # check if acquisition has been checked
@@ -118,7 +118,11 @@ class Validator:
                 obs_pd = pd.read_csv(obs_file, index_col=0)
             except FileNotFoundError:
                 obs_pd = pd.DataFrame()
-                obs_pd.to_csv(obs_file)
+                try:
+                    obs_pd.to_csv(obs_file)
+                except FileNotFoundError:
+                    os.mkdir(os.path.dirname(obs_file))
+                    obs_pd.to_csv(obs_file)
             try:
                 yet_checked = sub_period[0] in np.array(obs_pd[merged_file])
             except KeyError:
@@ -145,23 +149,18 @@ class Validator:
                     except FileNotFoundError:
                         pass
                 if has_obs:
-                    if os.path.exists(detections_file):
-                        pass
-                    else:
-                        print("Processing: %s" % sub_period[0])
-                        band_stack, folder = sh.get_data(**kwargs)  # get full data
-                        detector = RFTruckDetector()
-                        band_stack = detector.read_bands(merged_file)
-                        detector.train()
-                        detector.preprocess_bands(band_stack[0:4])
-                        detector.train()
-                        prediction = detector.predict()
-                        prediction_boxes = detector.extract_objects(prediction)
-                        try:
-                            detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-                        except ValueError:
-                            print("Number of detections: %s, cannot write" % len(prediction_boxes))
-                            continue
+                    print("Processing: %s" % sub_period[0])
+                    band_stack, folder = sh.get_data(**kwargs)  # get full data
+                    detector = RFTruckDetector()
+                    band_stack = detector.read_bands(merged_file)
+                    detector.preprocess_bands(band_stack[0:4])
+                    prediction = detector.predict()
+                    prediction_boxes = detector.extract_objects(prediction)
+                    try:
+                        detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+                    except ValueError:
+                        print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                        continue
                     self.detections_file = detections_file
                     with rio.open(merged_file, "r") as src:
                         meta = src.meta
@@ -284,17 +283,16 @@ class Validator:
                 imgs = np.array(glob(dir_s2_subsets + os.sep + "*" + tile + "*.tif"))
             except TypeError:  # nan
                 continue
-            lens = np.int32([len(x) for x in imgs])
-            img_file = imgs[np.where(lens == lens.max())[0]][0]
-            name = os.path.basename(img_file).split(".tif")[0]
-            print(img_file)
-            # read labels
-            validation_boxes = gpd.read_file(os.path.join(dir_labels,
-                                                          os.path.basename(img_file).split("_y0")[0] + ".gpkg"))
-            prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes.gpkg")
+            validation_boxes = gpd.read_file(glob(os.path.join(dir_labels, "*%s*.gpkg" % tile))[0])
             try:
-                prediction_boxes = gpd.read_file(prediction_boxes_file)  # read if yet processed
-            except DriverError:
+                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[0]
+            except IndexError:
+                lens = np.int32([len(x) for x in imgs])
+                img_file = imgs[np.where(lens == lens.max())[0]][0]
+                name = os.path.basename(img_file).split(".tif")[0]
+                print(img_file)
+                # read labels
+                prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes.gpkg")
                 rf_td = RFTruckDetector()
                 band_data = rf_td.read_bands(img_file)
                 lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
@@ -499,7 +497,7 @@ class Validator:
         ax = sns.regplot(x=s2, y=bast, color=c)
         regress = linregress(x=s2, y=bast)
         plt.text(position[0], position[1],
-                 "Lin. regression\nrsquared=%s\nslope=%s" % (np.round(regress.rvalue, 2),
+                 "Lin. regression\npearsonr=%s\nslope=%s" % (np.round(regress.rvalue, 2),
                                                              np.round(regress.slope, 2)), fontsize=8)
         plt.ylabel("BAST Lzg", fontsize=10)
         plt.xlabel("Sentinel-2 count", fontsize=10)
@@ -511,20 +509,22 @@ class Validator:
     @staticmethod
     def plot_box_validation_recall_precision(box_validation_csv):
         boxes_validation = pd.read_csv(box_validation_csv)
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(9, 5))
         unique_files = np.unique(boxes_validation["detection_file"])
         countries = {"T34UDC": "Poland", "T29SND": "Portugal", "T31UFS": "Belgium", "T33TUN": "Austria",
                      "T35TMK": "Romania", "T37MCT": "Kenya", "T52SDE": "South Korea", "T12SUC": "USA",
                      "T60HUD": "New Zealand", "T21HUB": "Argentina"}
         offsets = (- 0.1, 0, 0, 0.01, -0.09, 0, 0, 0, 0, 0)
-        labels, aucs = [], []
+        labels, aucs, f_scores, scores = [], [], [], None
         for idx, file in enumerate(unique_files):
             tile = file.split("_")[-5]
             labels.append(tile + " (%s)" % countries[tile])
             boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
+            scores = np.float32(boxes_validation_subset["score_threshold"])
             precision = np.float32(boxes_validation_subset["precision"])
             recall = np.float32(boxes_validation_subset["recall"])
-            scores = np.float32(boxes_validation_subset["score_threshold"])
+            f_score = 2 * ((precision * recall) / (precision + recall))
+            f_score[np.isnan(f_score)] = 0
             p = plt.plot(recall, precision)
             a = np.round(auc(recall, precision), 2)
             y_pos = np.min(precision[precision != 0]) - 0.03
@@ -532,17 +532,35 @@ class Validator:
             plt.text(np.max(recall) + offsets[idx] + 0.01, y_pos, "AUC=%s" % a,
                      fontsize=10, color=p[0].get_color())
             aucs.append(a)
-        plt.text(0.75, 0.03,
+            f_scores.append(f_score)
+        plt.text(0.74, 0.03,
                  "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
                  fontsize=10)
-        plt.ylim(0, 1)
+        plt.ylim(0, 1.1)
         plt.xlim(0, 1)
         plt.ylabel("Precision", fontsize=10)
         plt.xlabel("Recall", fontsize=10)
         plt.subplots_adjust(right=0.7)
+        plt.title("Recall vs. Precision", fontsize=12)
         plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
         plt.savefig(os.path.join(dir_validation_plots, "auc_box_validation_lineplot.png"), dpi=600)
         plt.close()
+        # plot f-score
+        fig, ax = plt.subplots(figsize=(9, 5))
+        for idx in range(len(f_scores)):
+            p = plt.plot(scores, f_scores[idx])
+        p = plt.plot(scores, np.nanmean(np.float32(f_scores), 0), linewidth=2.5, linestyle="--", color="black")
+        plt.ylim(0, 1)
+        plt.xlim(0, np.max(scores))
+        plt.ylabel("F-score", fontsize=10)
+        plt.xlabel("Detection score", fontsize=10)
+        plt.subplots_adjust(right=0.7)
+        labels.append("Mean")
+        plt.title("Detection score vs. F-score", fontsize=12)
+        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
+        plt.savefig(os.path.join(dir_validation_plots, "fscore_vs_score_validation_lineplot.png"), dpi=600)
+        plt.close()
+
 
 if __name__ == "__main__":
     if validate == "bast":
