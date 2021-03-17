@@ -21,7 +21,7 @@ roads_buffer = 40
 tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"), sep=";")
 tiles = list(tiles_pd["training_tiles"])
 tiles = list(tiles_pd["validation_tiles"])
-
+tiles = ["T33UWP"]
 
 def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
     tgt_crs = "EPSG:4326"
