@@ -171,6 +171,8 @@ class Comparison:
                 else:
                     s2_trucks_array = self.rasterize_s2_detections(
                         detections, reference_array, raster_variable_name, detections_raster_file)
+                self.write_wind_direction(wind_direction, meta, os.path.join(dir_comparison_wind,
+                                                                             "wind_direction_%s.tif" % date_compact))
                 s2_arrays.append(s2_trucks_array.copy())
                 wind_arrays.append(wind_direction.copy())
                 comparison_arrays[var0].append(reference_array[var0].values.copy())
@@ -306,6 +308,7 @@ class Comparison:
             var_s2 = s2_values[wind_indices, y, x].copy()
             var_s2 /= np.nanmax(var_s2)
             var0 = comparison_var0[wind_indices, y, x]
+            r_var0 = np.round(linregress(s2_values[wind_indices, y, x], var0).rvalue, 2)
             var0 /= np.nanmax(var0)
             var1 = comparison_var1[wind_indices, y, x]
             r_var1 = np.round(linregress(s2_values[wind_indices, y, x], var1).rvalue, 2)
@@ -321,7 +324,7 @@ class Comparison:
             plt.legend(["Sentinel-2 trucks"] + comparison_variables, fontsize=10, loc="center right",
                        bbox_to_anchor=(1.5, 0.5))
             plt.text(len(selected_dates) - 0.7, 0.8, "r-value S2 vs.\n%s=%s\n%s=%s" % (
-                var_name0, np.round(correlations[idx, y, x], 2), var_name1, r_var1),
+                var_name0, r_var0, var_name1, r_var1),
                      fontsize=8)
             plt.title("S2 trucks vs. %s and %s at position y=%s, x=%s" % (comparison_variables[0],
                                                                           comparison_variables[1], y, x))
@@ -500,6 +503,29 @@ class Comparison:
         plt.savefig(os.path.join(dir_comparison_plots, "s2_hannover_braunschweig_station_comparison_series.png"),
                     dpi=200)
         plt.close()
+
+    @staticmethod
+    def write_wind_direction(direction, rio_meta, target_file):
+        rio_meta["count"] = 1
+        with rio.open(target_file, "w", **rio_meta) as tgt:
+            tgt.write(direction.astype(rio_meta["dtype"]), 1)
+
+    @staticmethod
+    def plot_wind_histograms():
+        wind_files = glob(os.path.join(dir_comparison_wind, "*.tif"))
+            all_wind_directions = []
+            for wind_file in wind_files:
+                with rio.open(wind_file, "r") as src:
+                    data = src.read(1).flatten()
+                    all_wind_directions.append(data)
+            fig, ax = plt.subplots(figsize=(8, 5))
+            plt.hist(np.float32(all_wind_directions).flatten(), bins=np.arange(0, 361, 45), color="#002483")
+            plt.xlabel("Wind direction [°]")
+            plt.ylabel("Frequency among all dates")
+            plt.title("Wind direction distribution")
+            plt.savefig(os.path.join(dir_comparison_plots, "wind_direction_frequency_histplot.png"), dpi=400)
+            plt.close()
+
 
 
 if __name__ == "__main__":
