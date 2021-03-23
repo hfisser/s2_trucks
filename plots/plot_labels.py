@@ -1,8 +1,11 @@
 import os
+import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib import cm
+from scipy.stats import pearsonr
 from collections import OrderedDict
 
 dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
@@ -60,7 +63,7 @@ def plot_labels_relative(tiles, area_columns):
                fontsize=8)
     #plt.legend(by_label.values(), by_label.keys(), loc="center right", bbox_to_anchor=(1.25, 0.5))
     plt.xlim(0, 100)
-    plt.xlabel("Share of labels [%]", fontsize=8)
+    plt.xlabel("Share of labels in training/validation dataset [%]", fontsize=8)
  #   plt.title("Labels by country", fontsize=12)
     plt.tight_layout()
     plt.savefig(os.path.join(dirs["plots"], "training_validation_%s.png" % area_columns[0]), dpi=600)
@@ -140,9 +143,42 @@ def plot_label_stats(truth):
     plt.close()
 
 
+def plot_feature_correlation(truth):
+    sns.set_theme(style="white")
+    cols = ["blue_normalized", "green_normalized", "red_normalized", "nir_normalized",
+            "green_blue_ratio", "red_blue_ratio", "reflectance_var"]
+    correlation_matrix = np.zeros((len(cols), len(cols)))
+    for i, y in enumerate(cols):
+        for j, x in enumerate(cols):
+            correlation_matrix[i, j] = pearsonr(truth[x], truth[y])[0]
+    fig, ax = plt.subplots(figsize=(6, 6))
+    cmap = cm.YlGn.__copy__()
+    im = plt.imshow(correlation_matrix, cmap=cmap)
+    shape = correlation_matrix.shape
+    ax.set_xticks(np.arange(shape[1]))
+    ax.set_yticks(np.arange(shape[0]))
+    ax.set_yticklabels(cols)
+    ax.set_xticklabels(cols)
+    ax.xaxis.set_tick_params(labelsize=10)
+    ax.yaxis.set_tick_params(labelsize=10)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    plt.subplots_adjust(bottom=0.25, left=0.25)
+    plt.colorbar(im, fraction=0.02, pad=0.02)
+    # add numeric labels inside plot
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            value = str(np.round(correlation_matrix[i, j], 2))
+            value = value if len(value) > 3 else value + "0"
+            plt.text(i - 0.2, j + 0.1, value, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(dirs["plots"], "feature_correlations_heatmap.png"), dpi=500)
+    plt.close()
+
+
 if __name__ == "__main__":
     area_column_names = [["validation_countries", "training_countries"], ["validation_areas", "training_areas"]]
     for these_area_column_names in area_column_names:
         plot_labels_relative(tiles_pd, these_area_column_names)
     plot_label_stats(truth_pd)
     plot_label_distribution(truth_pd)
+    plot_feature_correlation(truth_pd)
