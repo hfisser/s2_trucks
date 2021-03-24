@@ -33,8 +33,8 @@ tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=
 
 s2_files = [os.path.join(dirs["main"], "data", "s2", "subsets", f) for f in
             ["S2A_MSIL2A_20200922T100031_N0214_R122_T33UWP_20200924T114821_y0_x0.tif",
-            "S2B_MSIL2A_20200828T100029_N0214_R122_T33UWP_20200828T120923_y0_x0.tif",
-            "S2B_MSIL2A_20201106T100219_N0214_R122_T33UWP_20201106T121510_y0_x0.tif"]]
+             "S2B_MSIL2A_20200828T100029_N0214_R122_T33UWP_20200828T120923_y0_x0.tif",
+             "S2B_MSIL2A_20201106T100219_N0214_R122_T33UWP_20201106T121510_y0_x0.tif"]]
 
 do_tuning = False
 truth_path_training = os.path.join(dirs["truth"], "spectra_ml_training_tiles.csv")
@@ -197,7 +197,7 @@ class RFTruckDetector:
     def _build_variables(self, band_stack):
         shape = band_stack.shape
         for band_idx in range(shape[0]):
-            band_stack[band_idx] /= np.nanmean(band_stack[band_idx])
+            band_stack[band_idx] -= np.nanmean(band_stack[band_idx])
         variables = np.zeros((7, shape[1], shape[2]), dtype=np.float16)
         variables[0] = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
         variables[1] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
@@ -274,8 +274,8 @@ class RFTruckDetector:
 
     @staticmethod
     def calc_speed(box_shape):
-        diameter = np.max(box_shape) * 10 / 2  # 10 m resolution
-        return (diameter * (3600 / SECONDS_OFFSET_B02_B04)) * 0.001
+        diameter = np.max(box_shape) * 10 - 10  # 10 m resolution; -10 for center of pixel
+        return diameter/SECONDS_OFFSET_B02_B04 * 3.6
 
     @staticmethod
     def calc_vector_direction_in_degree(vector):
@@ -284,17 +284,7 @@ class RFTruckDetector:
         :return:
         """
         # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
-        if vector[0] == 0:
-            direction = 0.
-        else:
-            direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
-        if vector[1] < 0 and vector[0] < 0:
-            direction = 360 - direction - 90
-        elif vector[1] < 0:
-            direction = 360 - direction
-        elif vector[0] < 0:
-            direction = 360 - direction - 180
-        return direction
+        return np.degrees(np.arctan2(vector[1], vector[0])) % 360
 
     @staticmethod
     def direction_degree_to_description(direction_degree):
