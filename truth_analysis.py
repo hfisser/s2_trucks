@@ -13,12 +13,14 @@ from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_imgs = os.path.join(dir_main, "data", "s2", "subsets")
+dir_imgs = "G:\\subsets"
 dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
-tiles = list(tiles_pd["training_tiles"])
+mode = ["training_tiles", "validation_tiles"][1]
+tiles = list(tiles_pd[mode])
 
 overwrite_truth_csv = True
 training_percentage = 85
@@ -30,10 +32,6 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
     arr, meta = rio_read_all_bands(image_file)
     osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(image_file))
-#    if os.path.exists(osm_file):
- #       with rio.open(osm_file, "r") as src:
-  #          osm_mask = src.read(1)
-   # else:
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(meta)))
     osm_mask = get_osm_mask(bbox_epsg4326, meta["crs"], arr[0], {"lat": lat, "lon": lon},
@@ -56,24 +54,6 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
-  #  for row_idx in np.random.choice(boxes_gpd.index, int(np.clip(len(boxes_gpd) - n_retain, 0, 1e+10)), replace=False):
- #       boxes_gpd.drop(row_idx, inplace=True)
-#    boxes_gpd.index = range(len(boxes_gpd))
-   # n_boxes = len(boxes_gpd)
-  #  n_training = np.int32(np.round(n_boxes * (training_percentage / 100)))
- #   boxes_range = list(range(n_boxes))
-#    indices_training = random.sample(range(n_boxes), k=n_training)
-   # for idx in indices_training:
-  #      del boxes_range[boxes_range.index(idx)]
- #   indices_validation = boxes_range
-#    boxes_training = boxes_truth.iloc[indices_training]
-   # boxes_validation = boxes_truth.iloc[indices_validation]
-  #  # save validation boxes
- #   boxes_validation.index = range(len(boxes_validation))
-#    boxes_validation.to_file(os.path.join(dir_truth_labels,
-   #                                       os.path.basename(image_file).split(".tif")[0] + "_validation.gpkg"),
-  #                           driver="GPKG")
- #   # extract stats from training boxes
 #    boxes_training.index = range(len(boxes_training))
     boxes_training = boxes_gpd
     means_arr = [np.nanmean(arr[band_idx]) for band_idx in [0, 1, 2, 3]]
@@ -89,6 +69,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
     print("Number of training boxes: %s" % n_retain)
     # ensure equal number of blueish, greenish and reddish spectra
+
 #    labels = ["red", "green", "blue"]
  #   n_given = [np.count_nonzero(spectra_ml["label"] == label) for label in labels]
   #  n_given_min = min(n_given)
@@ -99,7 +80,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
     #        spectra_ml.drop(row, inplace=True)
     #    spectra_ml.index = range(len(spectra_ml))
-    spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, int(n_retain * 3))
+    spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, int(n_retain))
     spectra_ml.to_csv(spectra_ml_csv)
 
 
@@ -218,7 +199,7 @@ def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means):
         row_idx = len(t)
         y, x = y[0], x[0]
         stack = sub_reflectances[0:4, y, x]
-        stack_normalized = sub_reflectances[0:4, y, x].copy() / means
+        stack_normalized = sub_reflectances[0:4, y, x].copy() - means
         t.loc[row_idx, "label"] = label
         t.loc[row_idx, "label_int"] = label_int
         t.loc[row_idx, "red"] = stack[0]
@@ -316,7 +297,7 @@ if __name__ == "__main__":
         os.mkdir(dir_truth)
     file_path_truth = os.path.join(dir_truth, "truth_analysis.csv")
     file_path_spectra = os.path.join(dir_truth, "spectra.csv")
-    file_path_spectra_ml = os.path.join(dir_truth, "spectra_ml.csv")
+    file_path_spectra_ml = os.path.join(dir_truth, "spectra_ml_%s.csv" % mode)
     if os.path.exists(file_path_truth) and overwrite_truth_csv:
         os.remove(file_path_truth)
     if os.path.exists(file_path_spectra) and overwrite_truth_csv:
@@ -330,9 +311,16 @@ if __name__ == "__main__":
     spectra_ml_pd.to_csv(file_path_spectra_ml)
     for tile in tiles:
         print(tile)
+        try:
+            np.isnan(tile)
+        except TypeError:
+            pass
+        else:
+            continue
         imgs = np.array(glob.glob(dir_imgs + os.sep + "*" + tile + "*.tif"))
         lens = np.int32([len(x) for x in imgs])
         img_file = imgs[np.where(lens == lens.min())[0]][0]
+        col_retain = {"training_tiles": "n_retain", "validation_tiles": "n_retain_validation"}
         boxes_truth = gpd.read_file(glob.glob(dir_truth_labels + os.sep + "*" + tile + "*.gpkg")[0])
-        extract_statistics(img_file, boxes_truth, int(tiles_pd[tiles_pd["training_tiles"] == tile]["n_retain"]),
+        extract_statistics(img_file, boxes_truth, int(tiles_pd[tiles_pd[mode] == tile][col_retain[mode]]),
                            file_path_spectra_ml)
