@@ -27,9 +27,9 @@ dir_labels = os.path.join(dir_data, "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 dir_training = os.path.join(dir_main, "training")
 dir_s2_subsets = os.path.join(dir_data, "s2", "subsets")
-dir_s2_subsets = "C:\\Users\\Lenovo\\Documents\\subsets"
+
 truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
-aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois.gpkg")
+aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois1.gpkg")
 boxes_validation_file = os.path.join(dir_validation, "boxes_validation.csv")
 
 SH_CREDENTIALS_FILE = os.path.join("F:" + os.sep + "sh", "sh.txt")
@@ -44,7 +44,7 @@ OSM_BUFFER = 20
 hour, minutes, year = 10, 20, 2018
 
 validate = "boxes"
-#validate = "bast"
+validate = "bast"
 
 stations = dict()
 bast_dir = os.path.dirname(aois_file)
@@ -93,10 +93,6 @@ class Validator:
             self.date = sub_period[0]
             band_names, resolution, folder = ["B04", "B03", "B02", "B08", "CLM"], 10, ""
             dir_save_archive = os.path.join(self.dirs["s2"], "archive")
-            # keep this clean, only archive should be retained
-            for directory in glob(os.path.join(os.path.dirname(dir_save_archive), "*")):
-                if directory != dir_save_archive:
-                    shutil.rmtree(directory)
             if not os.path.exists(dir_save_archive):
                 os.mkdir(dir_save_archive)
             sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])
@@ -108,71 +104,73 @@ class Validator:
             if os.path.exists(detections_file):
                 self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
                 continue
-            kwargs = dict(bbox=sh_bbox, period=sub_period, dataset=DataCollection.SENTINEL2_L2A,
-                          bands=["B04", "B03", "B02", "B08"], resolution=resolution, dir_save=self.dirs["s2"],
-                          merged_file=merged_file, mosaicking_order="leastCC")
-            data_yet_there, sh = os.path.exists(merged_file), SentinelHub()
-            obs_file = os.path.join(dir_save_archive, "obs.csv")  # check if acquisition has been checked
-            yet_checked = False
-            try:
-                obs_pd = pd.read_csv(obs_file, index_col=0)
-            except FileNotFoundError:
-                obs_pd = pd.DataFrame()
+            else:
+                kwargs = dict(bbox=sh_bbox, period=sub_period, dataset=DataCollection.SENTINEL2_L2A,
+                              bands=["B04", "B03", "B02", "B08"], resolution=resolution, dir_save=self.dirs["s2"],
+                              merged_file=merged_file, mosaicking_order="leastCC")
+                data_yet_there, sh = os.path.exists(merged_file), SentinelHub()
+                obs_file = os.path.join(dir_save_archive, "obs.csv")  # check if acquisition has been checked
+                yet_checked = False
                 try:
-                    obs_pd.to_csv(obs_file)
+                    obs_pd = pd.read_csv(obs_file, index_col=0)
                 except FileNotFoundError:
-                    os.mkdir(os.path.dirname(obs_file))
-                    obs_pd.to_csv(obs_file)
-            try:
-                yet_checked = sub_period[0] in np.array(obs_pd[merged_file])
-            except KeyError:
-                pass
-            finally:
-                if yet_checked:
-                    continue
-            if data_yet_there:
-                data_available = True
-            else:
-                sh.set_credentials(SH_CREDENTIALS_FILE)
-                data_available = sh.data_available(kwargs)
-            if data_available:
-                if data_yet_there:
-                    has_obs = data_yet_there
-                else:
-                    kwargs_copy = kwargs.copy()
-                    kwargs_copy["bands"] = ["CLM"]  # get cloud mask in order to check if low cloud coverage
-                    kwargs_copy["merged_file"] = os.path.join(dir_save_archive, "clm.tiff")
-                    clm, data_folder = sh.get_data(**kwargs_copy)  # get only cloud mask
-                    has_obs = self.has_observations(kwargs_copy["merged_file"])
+                    obs_pd = pd.DataFrame()
                     try:
-                        os.remove(kwargs_copy["merged_file"])  # cloud mask
+                        obs_pd.to_csv(obs_file)
                     except FileNotFoundError:
-                        pass
-                if has_obs:
-                    print("Processing: %s" % sub_period[0])
-                    band_stack, folder = sh.get_data(**kwargs)  # get full data
-                    detector = RFTruckDetector()
-                    band_stack = detector.read_bands(merged_file)
-                    detector.preprocess_bands(band_stack[0:4])
-                    prediction = detector.predict()
-                    prediction_boxes = detector.extract_objects(prediction)
-                    try:
-                        detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-                    except ValueError:
-                        print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                        os.mkdir(os.path.dirname(obs_file))
+                        obs_pd.to_csv(obs_file)
+                try:
+                    yet_checked = sub_period[0] in np.array(obs_pd[merged_file])
+                except KeyError:
+                    pass
+                finally:
+                    if yet_checked:
                         continue
-                    self.detections_file = detections_file
-                    with rio.open(merged_file, "r") as src:
-                        meta = src.meta
-                    self.lat = lat_from_meta(meta)
-                    self.lon = lon_from_meta(meta)
-                    detector, band_stack_np = None, None
-                    self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)  # run comparison
+                if data_yet_there:
+                    data_available = True
                 else:
-                    # add date for file in order to avoid duplicate check
+                    sh.set_credentials(SH_CREDENTIALS_FILE)
+                    data_available = sh.data_available(kwargs)
+                if data_available:
+                    if data_yet_there:
+                        has_obs = data_yet_there
+                    else:
+                        # check if data has enough non-cloudy observations
+                        kwargs_copy = kwargs.copy()
+                        kwargs_copy["bands"] = ["CLM"]  # get cloud mask in order to check if low cloud coverage
+                        kwargs_copy["merged_file"] = os.path.join(dir_save_archive, "clm.tiff")
+                        clm, data_folder = sh.get_data(**kwargs_copy)  # get only cloud mask
+                        has_obs = self.has_observations(kwargs_copy["merged_file"])
+                        try:
+                            os.remove(kwargs_copy["merged_file"])  # cloud mask
+                        except FileNotFoundError:
+                            pass
+                    if has_obs:
+                        print("Processing: %s" % sub_period[0])
+                        band_stack, folder = sh.get_data(**kwargs)  # get full data
+                        detector = RFTruckDetector()
+                        band_stack = detector.read_bands(merged_file)
+                        detector.preprocess_bands(band_stack[0:4])
+                        prediction = detector.predict()
+                        prediction_boxes = detector.extract_objects(prediction)
+                        try:
+                            detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+                        except ValueError:
+                            print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                            continue
+                        self.detections_file = detections_file
+                        with rio.open(merged_file, "r") as src:
+                            meta = src.meta
+                        self.lat = lat_from_meta(meta)
+                        self.lon = lon_from_meta(meta)
+                        detector, band_stack_np = None, None
+                        self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)  # run comparison
+                    else:
+                        # add date for file in order to avoid duplicate check
+                        self.register_non_available_date(sub_period[0], obs_pd, obs_file, merged_file)
+                else:
                     self.register_non_available_date(sub_period[0], obs_pd, obs_file, merged_file)
-            else:
-                self.register_non_available_date(sub_period[0], obs_pd, obs_file, merged_file)
         self.plot_bast_comparison(self.validation_file)
 
     def validate_with_bast(self, acquisition_date, detections_file, station_file, s2_data_file):
@@ -295,6 +293,7 @@ class Validator:
                 prediction_boxes_file = os.path.join(self.dirs["detections"], name + "_boxes.gpkg")
                 rf_td = RFTruckDetector()
                 band_data = rf_td.read_bands(img_file)
+                # subset to label extent
                 lat, lon = lat_from_meta(rf_td.meta), lon_from_meta(rf_td.meta)
                 extent = validation_boxes.total_bounds  # process only subset where boxes given
                 diff_ymin, diff_ymax = np.abs(lat - extent[3]), np.abs(lat - extent[1])
@@ -302,7 +301,7 @@ class Validator:
                 ymin, ymax = np.argmin(diff_ymin), np.argmin(diff_ymax)
                 xmin, xmax = np.argmin(diff_xmin), np.argmin(diff_xmax)
                 rf_td.preprocess_bands(band_data, {"ymin": ymin, "xmin": xmin, "ymax": ymax + 1, "xmax": xmax + 1})
-                rf_td.train()
+                # do detection
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_raster_to_gtiff(prediction_array,
@@ -311,28 +310,35 @@ class Validator:
             prediction_boxes = gpd.read_file(prediction_boxes_file)
             prediction_array, band_data, rf_td = None, None, None
             # iterate over score thresholds and plot precision and recall curve
-            for score_threshold in np.arange(0, 4, 0.25):
+            for score_threshold in np.arange(0, 3, 0.25):
                 prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
-                producer_positive, user_positive = 0, 0
-                percentage_intersection = []
+                true_positive, user_positive = 0, 0
+                intersection_over_union = []
                 for prediction_box in prediction_boxes.geometry:
                     for validation_box in validation_boxes.geometry:
                         if prediction_box.intersects(validation_box):
-                            difference = prediction_box.difference(validation_box)
-                            percentage_intersection.append((prediction_box.area - difference.area) / prediction_box.area)
-                            producer_positive += 1
-                            break
+                            union = prediction_box.union(validation_box)
+                            intersection = prediction_box.intersection(validation_box)
+                            iou = intersection.area/union.area
+                            if iou > 0.5:
+                                intersection_over_union.append(iou)
+                                true_positive += 1
+                                break
                 for validation_box in validation_boxes.geometry:
                     for prediction_box in prediction_boxes.geometry:
                         if validation_box.intersects(prediction_box):
-                            user_positive += 1
+                            union = prediction_box.union(validation_box)
+                            intersection = prediction_box.intersection(validation_box)
+                            iou = intersection.area/union.area
+                            if iou > 0.5:
+                                user_positive += 1
                             break
                 try:
-                    precision = producer_positive / len(prediction_boxes)
+                    precision = true_positive / len(prediction_boxes)
                 except ZeroDivisionError:
                     precision = 0
                 false_negative = len(validation_boxes) - user_positive
-                recall = producer_positive / (producer_positive + false_negative)
+                recall = true_positive / (true_positive + false_negative)
                 row_idx = len(boxes_validation_pd)
                 boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
                 boxes_validation_pd.loc[row_idx, "precision"] = precision
@@ -340,7 +346,7 @@ class Validator:
                 boxes_validation_pd.loc[row_idx, "score_threshold"] = score_threshold
                 boxes_validation_pd.loc[row_idx, "n_prediction_boxes"] = len(prediction_boxes)
                 boxes_validation_pd.loc[row_idx, "n_validation_boxes"] = len(validation_boxes)
-                boxes_validation_pd.loc[row_idx, "mean_area_intersection"] = np.mean(percentage_intersection)
+                boxes_validation_pd.loc[row_idx, "IoU"] = np.mean(intersection_over_union)
         boxes_validation_pd.to_csv(boxes_validation_file)
 
     @staticmethod
@@ -395,18 +401,12 @@ class Validator:
 
     @staticmethod
     def calc_vector_direction_in_degree(vector):
-        # [1,1] -> 45°
-        # [-1,1] -> 135°
-        # [-1,-1] -> 225°
-        # [1,-1] -> 315°
-        y_offset = 90 if vector[0] < 0 else 0
-        x_offset = 90 if vector[1] < 0 else 0
-        offset = 180 if y_offset == 0 and x_offset == 90 else 0
-        if vector[0] == 0:
-            direction = 0.
-        else:
-            direction = np.degrees(np.arctan(np.abs(vector[1]) / np.abs(vector[0])))
-        direction += offset + y_offset + x_offset
+        """
+        :param vector: array-like y, x
+        :return:
+        """
+        # [1,1] -> 45°; [-1,1] -> 135°; [-1,-1] -> 225°; [1,-1] -> 315°
+        direction = np.degrees(np.arctan2(vector[1], vector[0])) % 360
         return direction
 
     @staticmethod
@@ -489,7 +489,7 @@ class Validator:
         plt.savefig(os.path.join(dir_validation_plots, "%s_lineplot.png" % fname), dpi=300)
         plt.close()
         # scatter
-        sns.set(rc={'figure.figsize': (8, 6)})
+        sns.set(rc={"figure.figsize": (8, 6)})
         sns.set_theme(style="whitegrid")
         s2, bast = counts[:, 0] + counts[:, 1], counts[:, 2] + counts[:, 3]
         c, position = "#0c7a77", [15, np.max(s2) + 30]
@@ -527,15 +527,15 @@ class Validator:
             f_score[np.isnan(f_score)] = 0
             p = plt.plot(recall, precision)
             a = np.round(auc(recall, precision), 2)
-            y_pos = np.min(precision[precision != 0]) - 0.03
-            y_pos = 1.02 if np.abs(y_pos - 1) < 0.02 else y_pos
-            plt.text(np.max(recall) + offsets[idx] + 0.01, y_pos, "AUC=%s" % a,
-                     fontsize=10, color=p[0].get_color())
+   #         y_pos = np.min(precision[precision != 0]) - 0.03
+    #        y_pos = 1.02 if np.abs(y_pos - 1) < 0.02 else y_pos
+   #         plt.text(np.max(recall) + offsets[idx] + 0.01, y_pos, "AUC=%s" % a,
+    #                 fontsize=10, color=p[0].get_color())
             aucs.append(a)
             f_scores.append(f_score)
-        plt.text(0.74, 0.03,
-                 "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
-                 fontsize=10)
+  #      plt.text(0.74, 0.03,
+   #              "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
+    #             fontsize=10)
         plt.ylim(0, 1.1)
         plt.xlim(0, 1)
         plt.ylabel("Precision", fontsize=10)
@@ -543,7 +543,7 @@ class Validator:
         plt.subplots_adjust(right=0.7)
         plt.title("Recall vs. Precision", fontsize=12)
         plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
-        plt.savefig(os.path.join(dir_validation_plots, "auc_box_validation_lineplot.png"), dpi=600)
+        plt.savefig(os.path.join(dir_validation_plots, "recall_precision_box_validation_lineplot.png"), dpi=600)
         plt.close()
         # plot f-score
         fig, ax = plt.subplots(figsize=(9, 5))
