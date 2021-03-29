@@ -28,11 +28,12 @@ dir_comparison_detections_boxes = os.path.join(dir_comparison_detections, "boxes
 dir_comparison_detections_rasters = os.path.join(dir_comparison_detections, "rasters")
 dir_comparison_plots = os.path.join(dir_comparison, "plots")
 dir_validation = os.path.join(dir_main, "validation")
-dir_validation_data = os.path.join(dir_validation, "data", "s2", "archive")
+dir_validation_data = os.path.join(dir_validation, "data", "s2")
 dir_comparison_s5p = os.path.join(dir_comparison, "OUT_S5P")
 dir_comparison_insitu = os.path.join(dir_comparison, "OUT_Insitu")
 dir_comparison_wind = os.path.join(dir_comparison, "OUT_Wind")
 dir_validation = os.path.join(dir_main, "validation")
+dir_validation_detections = os.path.join(dir_validation, "detections")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
 
@@ -77,18 +78,24 @@ class Comparison:
             sh.set_credentials(SH_CREDENTIALS_FILE)
             sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
             file_str = "_".join([str(coord) for coord in sh_bbox]) + "_" + date.replace("-", "_")
-            split = file_str.split("_")
-            d, m, y = split[-3], split[-2], split[-1]
-            merged_file = os.path.join(dir_validation_data, "s2_bands_%s.tiff" % file_str)
-            detections_file = os.path.join(dir_comparison_detections_boxes, "%s_detections.gpkg" % file_str)
-            if os.path.exists(merged_file) or os.path.exists(detections_file):
+            date_split = file_str.split("_")
+            d, m, y = date_split[-3], date_split[-2], date_split[-1]
+            date_clean = "-".join([y, m, d])
+            station_clean = bast_station.split(" (")[0]
+            merged_file = os.path.join(
+                dir_validation_data, "s2_bands_%s_%s_%s_merged.tiff" % (station_clean, date_clean, date_clean))
+            detections_file = os.path.join(dir_validation_detections,
+                                           "s2_detections_%s_%s.gpkg" % (date_clean, station_clean))
+            if os.path.exists(detections_file):
                 detection_files.append(detections_file)
-            elif not os.path.exists(merged_file):
-                band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
-                                                 ["B04", "B03", "B02", "B08", "CLM"], resolution, dir_validation_data,
-                                                 merged_file)
-                band_stack = None
+                continue
             else:
+                if not os.path.exists(merged_file):
+                    band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
+                                                     ["B04", "B03", "B02", "B08", "CLM"], resolution,
+                                                     dir_validation_data,
+                                                     merged_file)
+                    band_stack = None
                 rf_td = RFTruckDetector()
                 band_stack = rf_td.read_bands(merged_file)
                 rf_td.preprocess_bands(band_stack[0:4])
@@ -96,7 +103,7 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-        uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_comparison_detections_boxes, "*.gpkg")))
+        uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_validation_detections, "*Braunschweig*.gpkg")))
         for comparison_variable in comparison_variables:
             self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2_arrays)
 
@@ -130,6 +137,8 @@ class Comparison:
     def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_arrays):
         wind_bins_low = np.arange(0, 181, 180, dtype=np.float32)  # wind directions
         wind_bins_up = np.arange(180, 361, 180, dtype=np.float32)
+        wind_bins_low = np.int16([135, 135])
+        wind_bins_up = np.int16([225, 180])
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
         var0, var1 = comparison_variables[0], comparison_variables[1]
         for row_idx in range(len(uba_station_locations_pd)):
@@ -171,6 +180,8 @@ class Comparison:
                 else:
                     s2_trucks_array = self.rasterize_s2_detections(
                         detections, reference_array, raster_variable_name, detections_raster_file)
+                    with rio.open(detections_raster_file, "r") as src:
+                        meta = src.meta
                 self.write_wind_direction(wind_direction, meta, os.path.join(dir_comparison_wind,
                                                                              "wind_direction_%s.tif" % date_compact))
                 s2_arrays.append(s2_trucks_array.copy())
@@ -240,10 +251,13 @@ class Comparison:
             dates = []
             for idx, detection_file in enumerate(detection_files):
                 detections = gpd.read_file(detection_file)
-                file_split = detection_file.split("_")
-                date = file_split[-2] + file_split[-3] + file_split[-4]
+                file_split = detection_file.split("_")[-2].split("-")
+                date = file_split[0] + file_split[1] + file_split[2]
                 dates.append(date)
-                date_idx = np.where(np.array(uba_dates) == date)[0][0]
+                try:
+                    date_idx = np.where(np.array(uba_dates) == date)[0][0]
+                except IndexError:
+                    continue  # date for which no UBA data is given
                 no2_of_hour = station_obs[date_idx * 24 + 10]   # hour 10 of day of interest in flat variable
                 values[row_idx, 0, idx] = no2_of_hour
                 values[row_idx, 1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
@@ -513,19 +527,18 @@ class Comparison:
     @staticmethod
     def plot_wind_histograms():
         wind_files = glob(os.path.join(dir_comparison_wind, "*.tif"))
-            all_wind_directions = []
-            for wind_file in wind_files:
-                with rio.open(wind_file, "r") as src:
-                    data = src.read(1).flatten()
-                    all_wind_directions.append(data)
-            fig, ax = plt.subplots(figsize=(8, 5))
-            plt.hist(np.float32(all_wind_directions).flatten(), bins=np.arange(0, 361, 45), color="#002483")
-            plt.xlabel("Wind direction [°]")
-            plt.ylabel("Frequency among all dates")
-            plt.title("Wind direction distribution")
-            plt.savefig(os.path.join(dir_comparison_plots, "wind_direction_frequency_histplot.png"), dpi=400)
-            plt.close()
-
+        all_wind_directions = []
+        for wind_file in wind_files:
+            with rio.open(wind_file, "r") as src:
+                data = src.read(1).flatten()
+                all_wind_directions.append(data)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        plt.hist(np.float32(all_wind_directions).flatten(), bins=np.arange(0, 361, 45), color="#002483")
+        plt.xlabel("Wind direction [°]")
+        plt.ylabel("Frequency among all dates")
+        plt.title("Wind direction distribution")
+        plt.savefig(os.path.join(dir_comparison_plots, "wind_direction_frequency_histplot.png"), dpi=400)
+        plt.close()
 
 
 if __name__ == "__main__":
