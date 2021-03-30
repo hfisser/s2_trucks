@@ -36,7 +36,7 @@ s2_files = [os.path.join(dirs["main"], "data", "s2", "subsets", f) for f in
              "S2B_MSIL2A_20200828T100029_N0214_R122_T33UWP_20200828T120923_y0_x0.tif",
              "S2B_MSIL2A_20201106T100219_N0214_R122_T33UWP_20201106T121510_y0_x0.tif"]]
 
-do_tuning = False
+do_tuning = True
 truth_path_training = os.path.join(dirs["truth"], "spectra_ml_training_tiles.csv")
 truth_path_validation = os.path.join(dirs["truth"], "spectra_ml_validation_tiles.csv")
 
@@ -44,12 +44,12 @@ OSM_BUFFER = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
 
 # RF hyper parameters from hyper parameter tuning
-N_ESTIMATORS = 1600
-MIN_SAMPLES_SPLIT = 10
+N_ESTIMATORS = 294
+MIN_SAMPLES_SPLIT = 5
 MIN_SAMPLES_LEAF = 1
 MAX_FEATURES = "sqrt"
 MAX_DEPTH = 20
-BOOTSTRAP = True
+BOOTSTRAP = False
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.pickle")
 
