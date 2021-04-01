@@ -88,11 +88,15 @@ class Validator:
         station_folder = "zst" + self.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
         station_file = os.path.join(self.dirs["station_counts"], station_folder, station_folder + "_%s.csv" %
                                     str(year))
+
         for sub_period in dates_between:
             print("At date: %s" % sub_period)
             self.date = sub_period[0]
             band_names, resolution, folder = ["B04", "B03", "B02", "B08", "CLM"], 10, ""
             dir_save_archive = os.path.join(self.dirs["s2"], "archive")
+
+            dir_save_archive = "G:\\archive"
+
             if not os.path.exists(dir_save_archive):
                 os.mkdir(dir_save_archive)
             sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])
@@ -101,7 +105,7 @@ class Validator:
             merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (self.station_name_clear,
                                                                                             sub_period[0],
                                                                                             sub_period[1]))
-            if os.path.exists(detections_file):
+            if False:#os.path.exists(detections_file):
                 self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
                 continue
             else:
@@ -462,49 +466,62 @@ class Validator:
 
     @staticmethod
     def plot_bast_comparison(validation_file):
-        s2_color, bast_color = "#5e128a", "#33bd2b"
-        sns.set(rc={'figure.figsize': (9, 5)})
-        sns.set_theme(style="whitegrid")
-        validation = pd.read_csv(validation_file)
-        unique_dates = np.unique(validation["date"])
-        colors = [s2_color, "#f542cb", bast_color, "#abc70a"]
-        columns = ["s2_direction1", "s2_direction2", "Lzg_R1", "Lzg_R2"]
-        counts = np.zeros((len(unique_dates), 4), dtype=np.int16)
-        for i, acquisition_date in enumerate(unique_dates):
-            idx = np.where(validation["date"] == acquisition_date)[0][0]
-            row = validation.iloc[idx]
-            counts[i] = np.int16([np.int16(row[column]) for column in columns])
-        for i, c in enumerate(colors):
-            ax = sns.lineplot(x=unique_dates, y=counts[:, i], color=c)
-        labels = ["S2 direction 1", "S2 direction 2", "BAST Lzg direction 1", "BAST Lzg direction 2"]
-        plt.legend(labels, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
-        plt.subplots_adjust(bottom=0.2, right=0.8)
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-        ax.xaxis.set_tick_params(labelsize=10)
-        ax.yaxis.set_tick_params(labelsize=10)
-        title = "Sentinel-2 & BAST counts " + validation_file.split("_")[-1].split(".csv")[0]
-        plt.title(title, fontsize=12)
-        plt.tight_layout()
-        fname = title.replace(" ", "_")
-        plt.savefig(os.path.join(dir_validation_plots, "%s_lineplot.png" % fname), dpi=300)
-        plt.close()
-        # scatter
-        sns.set(rc={"figure.figsize": (8, 6)})
-        sns.set_theme(style="whitegrid")
-        s2, bast = counts[:, 0] + counts[:, 1], counts[:, 2] + counts[:, 3]
-        c, position = "#0c7a77", [15, np.max(s2) + 30]
-        ax = sns.scatterplot(x=s2, y=bast, color=c)
-        ax = sns.regplot(x=s2, y=bast, color=c)
-        regress = linregress(x=s2, y=bast)
-        plt.text(position[0], position[1],
-                 "Lin. regression\npearsonr=%s\nslope=%s" % (np.round(regress.rvalue, 2),
-                                                             np.round(regress.slope, 2)), fontsize=8)
-        plt.ylabel("BAST Lzg", fontsize=10)
-        plt.xlabel("Sentinel-2 count", fontsize=10)
-        plt.title("Sentinel-2 trucks vs. BAST Lzg", fontsize=12)
-        plt.tight_layout()
-        plt.savefig(os.path.join(dir_validation_plots, "%s_scatterplot.png" % fname), dpi=300)
-        plt.close()
+        s2_columns = ["s2_direction1", "s2_direction2"]
+        s2_labels = ["S2 direction 1", "S2 direction 2"]
+        lzg_columns, lzg_labels = ["Lzg_R1", "Lzg_R2"], ["BAST Lzg direction 1", "BAST Lzg direction 2"]
+        all_columns = np.hstack([s2_columns, lzg_columns, "KFZ_R1", "KFZ_R2"])
+        all_labels = np.hstack([s2_labels, lzg_labels,
+                                "BAST Kfz direction 1", "BAST Kfz direction 2"])
+        s2_lzg_columns = np.hstack([s2_columns, lzg_columns])
+        s2_lzg_labels = np.hstack([s2_labels, lzg_labels])
+        for columns, labels, suffix in zip([s2_lzg_columns, all_columns], [s2_lzg_labels, all_labels],
+                                           ["Lzg", "Lzg_Kfz"]):
+            s2_color, bast_lzg_color = "#5e128a", "#33bd2b",
+            sns.set(rc={"figure.figsize": (9, 5)})
+            sns.set_theme(style="whitegrid")
+            validation = pd.read_csv(validation_file)
+            unique_dates = np.unique(validation["date"])
+            colors = [s2_color, "#f542cb", bast_lzg_color, "#abc70a"]
+            if len(columns) > 4:
+                colors.append("#185a61")  # for kfzs
+                colors.append("#4dd0de")
+            counts = np.zeros((len(unique_dates), len(columns)), dtype=np.int16)
+            for i, acquisition_date in enumerate(unique_dates):
+                idx = np.where(validation["date"] == acquisition_date)[0][0]
+                row = validation.iloc[idx]
+                counts[i] = np.int16([np.int16(row[column]) for column in columns])
+            for i, c in enumerate(colors):
+                ax = sns.lineplot(x=unique_dates, y=counts[:, i], color=c)
+            plt.legend(labels, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
+            plt.subplots_adjust(bottom=0.2, right=0.8)
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+            ax.xaxis.set_tick_params(labelsize=10)
+            ax.yaxis.set_tick_params(labelsize=10)
+            title = "Sentinel-2 & BAST counts " + validation_file.split("_")[-1].split(".csv")[0]
+            plt.title(title, fontsize=12)
+            plt.tight_layout()
+            fname = title.replace(" ", "_")
+            plt.savefig(os.path.join(dir_validation_plots, "%s_%s_lineplot.png" % (fname, suffix)), dpi=300)
+            plt.close()
+            # scatter
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.set_theme(style="whitegrid")
+            s2, bast = counts[:, 0] + counts[:, 1], counts[:, counts.shape[1] - 2] + counts[:, counts.shape[1] - 1]
+            c, position = "#0c7a77", [15, np.max(s2) + 30]
+            ax = sns.scatterplot(x=s2, y=bast, color=c)
+            ax = sns.regplot(x=s2, y=bast, color=c)
+            regress = linregress(x=s2, y=bast)
+            plt.text(40, position[1],
+                     "Lin. regression\npearson r-value=%s\nslope=%s" % (np.round(regress.rvalue, 2),
+                                                                 np.round(regress.slope, 2)), fontsize=8)
+            label = labels[-1][:8]
+            plt.ylabel(label, fontsize=10)
+            plt.xlabel("Sentinel-2 count", fontsize=10)
+            plt.title("Sentinel-2 trucks vs. %s" % label, fontsize=12)
+            plt.tight_layout()
+            plt.savefig(os.path.join(dir_validation_plots, "%s_%s_scatterplot.png" % (fname, label.replace(" ", ""))),
+                        dpi=300)
+            plt.close()
 
     @staticmethod
     def plot_box_validation_recall_precision(box_validation_csv):
