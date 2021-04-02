@@ -19,7 +19,7 @@ if not os.path.exists(dirs["save_archive"]):
 
 aoi_file_path = os.path.join(dirs["main"], "aoi_nairobi.gpkg")
 bands = ["B04", "B03", "B02", "B08"]
-overall_period = ["2019-01-01", "2019-12-31"]
+overall_period = ["2018-01-01", "2020-12-31"]
 resolution = 10
 min_valid_percentage = 90  # minimum % valid pixels after cloud masking (masked to OSM roads)
 
@@ -80,7 +80,6 @@ class TrucksProcessor:
                     if has_obs:
                         print("Processing date: %s" % period[0])
                         # get data and do detection
-                        kwargs["bands"] = bands[0:-1]  # excl. clm, we have it yet
                         band_stack, data_folder = sh.get_data(**kwargs)  # get full data
                         band_stack = None
                         rf_td = RFTruckDetector()
@@ -92,8 +91,11 @@ class TrucksProcessor:
                         prediction = rf_td.predict()
                         detection_boxes = rf_td.extract_objects(prediction)
                         detection_boxes["detection_date"] = period[0]
-                        rf_td.prediction_boxes_to_gpkg(detection_boxes, detection_boxes_file)
-                        n_dates_processed += 1
+                        try:
+                            rf_td.prediction_boxes_to_gpkg(detection_boxes, detection_boxes_file)
+                            n_dates_processed += 1
+                        except ValueError:
+                            continue
                     else:
                         # add date for file in order to avoid duplicate check
                         self.register_non_available_date(period[0], obs_pd, obs_file, s2_data_file)
@@ -117,7 +119,10 @@ class TrucksProcessor:
         n_valid = np.count_nonzero(~np.isnan(rf_td.variables[0]))  # n valid pixels masked to OSM roads
         rf_td.mask_clouds(clm)
         n_valid_masked = np.count_nonzero(~np.isnan(rf_td.variables[0]))  # n valid pixels cloud-masked
-        valid_percentage = (n_valid_masked / n_valid) * 100
+        try:
+            valid_percentage = (n_valid_masked / n_valid) * 100
+        except ZeroDivisionError:
+            return 0
         rf_td, clm = None, None
         return valid_percentage > min_valid_percentage
 
