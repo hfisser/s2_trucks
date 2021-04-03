@@ -76,8 +76,7 @@ class RFTruckDetector:
                                         min_samples_leaf=MIN_SAMPLES_LEAF,
                                         max_features=MAX_FEATURES,
                                         max_depth=MAX_DEPTH,
-                                        bootstrap=BOOTSTRAP,
-                                        oob_score=True)
+                                        bootstrap=BOOTSTRAP)
             self._load_truth()
             rf.fit(self.truth_variables["train"], self.truth_labels["train"])
             self.io.write_model(rf, MODEL_PATH)
@@ -86,22 +85,16 @@ class RFTruckDetector:
     def tune(self, tuning_path):
         self._load_truth()
         tuning_pd = pd.DataFrame()
-        n_trees = list(np.int16(np.linspace(start=200, stop=2000, num=20)))
-        max_features = ["auto", "sqrt"]
-        max_depth = list(np.int16(np.linspace(10, 150, num=15)))
-        max_depth.append(None)
-        min_samples_split = [2, 5, 10]
-        min_samples_leaf = [1, 2, 4]
-        bootstrap = [True, False]
-        hyper_hyper = {"n_estimators": n_trees,
-                       "max_features": max_features,
-                       "max_depth": max_depth,
-                       "min_samples_split": min_samples_split,
-                       "min_samples_leaf": min_samples_leaf,
-                       "bootstrap": bootstrap}
+        hyper_hyper = {"n_estimators": list(np.int16(np.linspace(start=100, stop=2000, num=20))),
+                       "max_features": ["auto", "sqrt"],
+                       "max_depth": list(np.int16(np.linspace(start=10, stop=100, num=20))),
+                       "min_samples_split": list(np.int16(np.linspace(start=2, stop=20, num=20))),
+                       "min_samples_leaf": list(np.int16(np.linspace(start=1, stop=20, num=20))),
+                       "bootstrap": [True]}
         rf = RandomForestClassifier()
-        rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper, n_iter=200, cv=3, verbose=2,
-                                       random_state=42, n_jobs=-1)
+        rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper,
+                                       n_iter=200, cv=3, verbose=2,
+                                       random_state=42, n_jobs=2)
         rf_random.fit(self.truth_variables["train"], self.truth_labels["train"])
         for key, value in rf_random.best_params_.items():
             tuning_pd[key] = [value]
@@ -318,9 +311,10 @@ class RFTruckDetector:
 if __name__ == "__main__":
     for s2_file in s2_files:
         rf_td = RFTruckDetector()
-        bands = rf_td.read_bands(s2_file)
         if do_tuning:
             rf_td.tune(os.path.join(dirs["main"], "training", "hyper_parameter_tuning.csv"))
+            break
+        bands = rf_td.read_bands(s2_file)
         s = None
         rf_td.preprocess_bands(bands, s)
         rf_td.train()
