@@ -4,9 +4,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib import cm
+from matplotlib import cm, rcParams
 from scipy.stats import pearsonr
 from collections import OrderedDict
+
+rcParams["font.serif"] = "Times New Roman"
+rcParams["font.family"] = "serif"
 
 dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["training"] = os.path.join(dirs["main"], "training")
@@ -17,8 +20,6 @@ truth_pd = pd.read_csv(os.path.join(dirs["main"], "truth", "spectra_ml_training_
 
 COLORS = ["#2e2e2e", "#0000ff", "#00ff00", "#ff0000"]
 LABEL_INTS, LABELS = [1, 2, 3, 4], ["background", "blue", "green", "red"]
-
-sns.set_theme(style="whitegrid")
 
 
 def plot_labels_relative(tiles, area_columns):
@@ -147,6 +148,8 @@ def plot_feature_correlation(truth):
     sns.set_theme(style="white")
     cols = ["blue_normalized", "green_normalized", "red_normalized", "nir_normalized",
             "green_blue_ratio", "red_blue_ratio", "reflectance_var"]
+    labels = ["B02_centered", "B03_centered", "B04_centered", "B08_centered", "B03_B02_ratio",
+              "B04_B02_ratio", "reflectance_variance"]
     correlation_matrix = np.zeros((len(cols), len(cols)))
     for i, y in enumerate(cols):
         for j, x in enumerate(cols):
@@ -157,8 +160,8 @@ def plot_feature_correlation(truth):
     shape = correlation_matrix.shape
     ax.set_xticks(np.arange(shape[1]))
     ax.set_yticks(np.arange(shape[0]))
-    ax.set_yticklabels(cols)
-    ax.set_xticklabels(cols)
+    ax.set_yticklabels(labels)
+    ax.set_xticklabels(labels)
     ax.xaxis.set_tick_params(labelsize=10)
     ax.yaxis.set_tick_params(labelsize=10)
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
