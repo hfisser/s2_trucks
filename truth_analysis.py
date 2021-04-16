@@ -8,29 +8,28 @@ import xarray as xr
 import rasterio as rio
 from osm_utils.utils import get_roads, rasterize_osm
 from array_utils.io import rio_read_all_bands
-from array_utils.math import rescale, normalized_ratio
+from array_utils.math import normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_imgs = os.path.join(dir_main, "data", "s2", "subsets")
-dir_imgs = "G:\\subsets"
 dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
-mode = ["training_tiles", "validation_tiles"][1]
+mode = ["training_tiles", "validation_tiles"][0]
 tiles = list(tiles_pd[mode])
 
 overwrite_truth_csv = True
-training_percentage = 85
 
-OSM_BUFFER = 30
+osm_buffer = 20
 
 
 def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
     arr, meta = rio_read_all_bands(image_file)
+    arr = arr.astype(np.float32)
     osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(image_file))
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(meta)))
@@ -41,16 +40,12 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     with rio.open(osm_file, "w", **meta) as tgt:
         tgt.write(osm_mask, 1)
     arr *= osm_mask
-    #arr[np.isnan(arr)] = 0.
-   # arr = rescale(arr.copy(), 0, 1)
-    #arr[arr == 0] = np.nan
     n_bands = 3
     ratios = np.zeros((n_bands + 1, arr.shape[1], arr.shape[2]))
     ratio_counterparts = [2, 0, 0]
     for band_idx in range(n_bands):
         ratios[band_idx] = normalized_ratio(arr[band_idx], arr[ratio_counterparts[band_idx]])
     ratios[3] = normalized_ratio(arr[1], arr[2])  # add green vs. blue
- #   reflectance_difference_stack = expose_anomalous_pixels(arr)
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     # shift lat lon to pixel center
     lat_shifted, lon_shifted = shift_lat(lat, 0.5), shift_lon(lon, 0.5)
@@ -63,23 +58,11 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
         y1, y0 = get_smallest_deviation(lat_shifted, box[1]), get_smallest_deviation(lat_shifted, box[3])
         sub_arr = arr[0:4, y0:y1 + 1, x0:x1 + 1].copy()
         sub_ratios = ratios[:, y0:y1 + 1, x0:x1 + 1].copy()
-   #     sub_diffs = reflectance_difference_stack[:, y0:y1 + 1, x0:x1 + 1].copy()
         spectra_ml = extract_rgb_spectra(spectra_ml, sub_arr, sub_ratios, means_arr)
         arr[:, y0:y1 + 1, x0:x1 + 1] = np.nan  # mask out box reflectances in order to avoid using them as background
         ratios[:, y0:y1 + 1, x0:x1 + 1] = np.nan
     print("Number of training boxes: %s" % n_retain)
     # ensure equal number of blueish, greenish and reddish spectra
-
-#    labels = ["red", "green", "blue"]
- #   n_given = [np.count_nonzero(spectra_ml["label"] == label) for label in labels]
-  #  n_given_min = min(n_given)
-   # labels.remove(labels[np.where(np.int16(n_given) == n_given_min)[0][0]])
-    ## adjust labels in order to have equal number
-    #for label in labels:
-    #    indices = np.where(spectra_ml["label"] == label)[0]
-    #    for row in np.random.choice(indices, len(indices) - n_given_min, replace=False):
-    #        spectra_ml.drop(row, inplace=True)
-    #    spectra_ml.index = range(len(spectra_ml))
     spectra_ml = add_background(spectra_ml, arr, ratios, means_arr, int(n_retain))
     spectra_ml.to_csv(spectra_ml_csv)
 
@@ -231,7 +214,7 @@ def add_background(t, reflectances, ratios, means, n_background):
     random_indices = np.random.randint(0, len(not_nan_y), np.clip(n_background, 0, len(not_nan_y)))
     reflectances_normalized = np.zeros_like(reflectances)
     for band_idx, mean_value in zip(range(reflectances.shape[0]), means):
-        reflectances_normalized[band_idx] = reflectances[band_idx].copy() / mean_value
+        reflectances_normalized[band_idx] = reflectances[band_idx].copy() - mean_value
     for random_idx in zip(random_indices):
         y_arr_idx, x_arr_idx = not_nan_y[random_idx], not_nan_x[random_idx]
         stack_normalized = reflectances_normalized[:, y_arr_idx, x_arr_idx]
@@ -260,7 +243,7 @@ def add_background(t, reflectances, ratios, means, n_background):
 
 
 def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
-    osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
+    osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], osm_buffer,
                          dir_out, str(bbox).replace(", ", "_").replace("-", "minus")[1:-1] + "_osm_roads", str(crs),
                          reference_arr)
     osm_vec = gpd.read_file(osm_file)
