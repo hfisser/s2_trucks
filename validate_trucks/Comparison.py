@@ -7,6 +7,7 @@ import xarray as xr
 import rasterio as rio
 import matplotlib.pyplot as plt
 import seaborn as sns
+from fiona.errors import DriverError
 from shapely.geometry import Point
 from validate_trucks.TruckValidator import Validator
 from glob import glob
@@ -18,8 +19,6 @@ from detect_trucks.RandomForestTrucks import RFTruckDetector
 SH_CREDENTIALS_FILE = os.path.join("F:" + os.sep + "sh", "sh.txt")
 
 resolution = 10
-
-bast_station = "Braunschweig-Flughafen (3429)"
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_comparison = os.path.join(dir_main, "comparison")
@@ -46,33 +45,20 @@ aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
 uba_stations_locations_file = os.path.join(dir_comparison_insitu, "station_locations.csv")
 uba_dates = "20180410,20180420,20180507,20180520,20180522,20180606,20180611,20180724,20180726,20180803,20180823," \
             "20180919,20181012,20181014".split(",")
-
-
-process_dates = ["10-04-2018",
-                 "20-04-2018",
-                 "07-05-2018",
-                 "20-05-2018",
-                 "22-05-2018",
-                 "06-06-2018",
-                 "11-06-2018",
-                 "24-07-2018",
-                 "03-08-2018",
-                 "23-08-2018",
-                 "19-09-2018",
-                 "12-10-2018"]
 comparison_variables = ["var_VCDtropo", "var_mod_NO2_AK_coulumn"]
 lon_crop = 10.6695
-uba_station_buffer = 10000  # meters
+uba_station_buffer = 2500  # meters
 
 
 class Comparison:
-    def __init__(self, dates, aoi_file_path):
-        self.dates = dates
+    def __init__(self, bast_station, aoi_file_path):
+        self.bast_station = bast_station
         self.bbox = gpd.read_file(aoi_file_path).to_crs("EPSG:4326").geometry.bounds
 
     def run_comparison(self):
+        s2_files = glob(os.path.join(dir_validation_data, "*%s*.tiff" % self.bast_station))  # assume data is yet there
         detection_files, uba_no2_arrays = [], []
-        for date in self.dates:
+        for date in [f.split("_")[-2] for f in s2_files]:
             print(date)
             sh = SentinelHub()
             sh.set_credentials(SH_CREDENTIALS_FILE)
@@ -81,15 +67,15 @@ class Comparison:
             date_split = file_str.split("_")
             d, m, y = date_split[-3], date_split[-2], date_split[-1]
             date_clean = "-".join([y, m, d])
-            station_clean = bast_station.split(" (")[0]
+            station_clean = self.bast_station.split(" (")[0]
             merged_file = os.path.join(
                 dir_validation_data, "s2_bands_%s_%s_%s_merged.tiff" % (station_clean, date_clean, date_clean))
             detections_file = os.path.join(dir_validation_detections,
                                            "s2_detections_%s_%s.gpkg" % (date_clean, station_clean))
-            if os.path.exists(detections_file):
+            try:
+                gpd.read_file(detections_file)
                 detection_files.append(detections_file)
-                continue
-            else:
+            except DriverError:
                 if not os.path.exists(merged_file):
                     band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
                                                      ["B04", "B03", "B02", "B08", "CLM"], resolution,
@@ -103,7 +89,9 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-        uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_validation_detections, "*Braunschweig*.gpkg")))
+            finally:
+                uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_validation_detections,
+                                                                           "*%s*.gpkg" % station_clean)))
         for comparison_variable in comparison_variables:
             self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2_arrays)
 
@@ -135,8 +123,6 @@ class Comparison:
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
     def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_arrays):
-        wind_bins_low = np.arange(0, 181, 180, dtype=np.float32)  # wind directions
-        wind_bins_up = np.arange(180, 361, 180, dtype=np.float32)
         wind_bins_low = np.int16([135, 135])
         wind_bins_up = np.int16([225, 180])
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
@@ -245,9 +231,7 @@ class Comparison:
             row = uba_station_locations_pd.iloc[row_idx]
             station_name = row.name
             station_buffer = self.get_uba_station_buffer(row, uba_station_buffer, crs)
-            station_file = os.path.join(dir_comparison_insitu, "_".join([station_name, "NO2", "year", "2018", ".nc"]))
-            station_data = xr.open_dataset(station_file)
-            station_obs = station_data.obs.values
+            station_obs = self.read_uba_station_data(station_name)
             dates = []
             for idx, detection_file in enumerate(detection_files):
                 detections = gpd.read_file(detection_file)
@@ -261,29 +245,65 @@ class Comparison:
                 no2_of_hour = station_obs[date_idx * 24 + 10]   # hour 10 of day of interest in flat variable
                 values[row_idx, 0, idx] = no2_of_hour
                 values[row_idx, 1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
-            values[np.isnan(values)] = 0
             y, x = values[row_idx][0], values[row_idx][1]
-            y[x == 0] = 0
-            x[y == 0] = 0
+            nan_mask = ~np.isnan(y) * ~np.isnan(x)
+            y = y[nan_mask]
+            x = x[nan_mask]
+            dates = np.array(dates)[nan_mask]
+            # scatterplot
             regress = linregress(x, y)
             try:
                 m, b = np.polyfit(x, y, 1)
             except np.linalg.LinAlgError:  # only zeros (nans)
                 continue
-            plt.plot(x, m * x + b, color="#2b2b2b")
-            plt.scatter(x, y, color="#c404ab")
+            fig, ax = plt.subplots(figsize=(7, 4))
+            ax.plot(x, m * x + b, color="#2b2b2b")
+            ax.scatter(x, y, color="#c404ab")
             plt.xlabel("S2 trucks")
             plt.ylabel("UBA station NO2 (10-11 AM)")
-            plt.title("UBA station %s" % station_name, fontsize=12)
-            plt.axes().xaxis.set_tick_params(labelsize=8)
-            plt.axes().yaxis.set_tick_params(labelsize=8)
-            plt.text(np.nanquantile(x, [0.025])[0],
-                     np.nanquantile(y, [0.95])[0], "Lin. regression\nr-value: %s\nslope: %s" % (np.round(regress.rvalue, 2),
+            plt.title("UBA station %s" % station_name)
+            plt.text(np.nanquantile(x, [0.01])[0],
+                     np.nanquantile(y, [0.925])[0], "Lin. regression\nr-value: %s\nslope: %s" % (np.round(regress.rvalue, 2),
                                                                              np.round(regress.slope, 2)),
                      fontsize=8)
-            plt.savefig(os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png"), dpi=200)
+            file_name = os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png")
+            plt.savefig(file_name, dpi=400)
+            plt.close()
+            # lineplot
+            fix, ax = plt.subplots(figsize=(7, 4))
+            dates_formatted = np.array([np.datetime64("-".join([d[:4], d[4:6], d[6:]])) for d in dates])
+            time_argsorted = np.argsort(dates_formatted)
+            y_normalized, x_normalized = y / np.max(y), x / np.max(x)
+            ax.plot_date(dates_formatted[time_argsorted], y_normalized[time_argsorted], color="#8fb22a", alpha=0.5, ms=5)
+            ax.plot_date(dates_formatted[time_argsorted], x_normalized[time_argsorted], color="#82068c", alpha=0.5, ms=5)
+            ax.legend(["Station NO$_{2}$", "Sentinel-2 trucks"], loc="center right", bbox_to_anchor=(1.37, 0.5))
+            ax.plot(dates_formatted[time_argsorted], x_normalized[time_argsorted], color="#82068c")
+            ax.plot(dates_formatted[time_argsorted], y_normalized[time_argsorted], color="#8fb22a")
+            plt.subplots_adjust(bottom=0.18, right=0.76)
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(dir_comparison_plots, file_name.replace("scatter", "line")), dpi=400)
             plt.close()
         return values[:, 0, :]
+
+    @staticmethod
+    def read_uba_station_data(station_name):
+        station_file = os.path.join(dir_comparison_insitu, "_".join([station_name, "NO2", "year", "2018", ".nc"]))
+        # try to open netcdf
+        try:
+            station_data = xr.open_dataset(station_file)
+        except FileNotFoundError:  # then csv file should work, assume it contains data from 01-01-2018 to 31-12-2018
+            files = glob(os.path.join(dir_comparison_insitu, "*%s.csv" % station_name))
+            try:
+                station_pd = pd.read_csv(files[0], sep=";")
+            except:
+                print(station_name)
+            station_obs = np.array(station_pd["Messwert"])
+            station_obs = np.array([str(obs).replace(",", ".") for obs in station_obs])
+            station_obs[station_obs == "-"] = "0"
+            station_obs = np.float32(station_obs)[:365 * 24]
+        else:
+            station_obs = station_data.obs.values
+        return station_obs
 
     @staticmethod
     def compare_spatially(wind_directions, s2_values, comparison_values, wind_bins_low, wind_bins_up, dates,
@@ -475,10 +495,9 @@ class Comparison:
                 wind_direction[y, x] = meteorological_direction
         return wind_direction
 
-    @staticmethod
-    def compare_station_counts(detection_files, dates):
+    def compare_station_counts(self, detection_files, dates):
         # compare the processed dates with BAST station data
-        validator = Validator(bast_station, aoi_file, dir_validation, dir_osm)
+        validator = Validator(self.bast_station, aoi_file, dir_validation, dir_osm)
         station_folder = "zst" + validator.station_name.split("(")[1].split(")")[0]
         wrong = len(station_folder) == 4
         station_folder = "zst" + validator.station_name.split(") ")[1].split("(")[1][0:-1] if wrong else station_folder
@@ -542,9 +561,11 @@ class Comparison:
 
 
 if __name__ == "__main__":
+    uba_stations = pd.read_csv(uba_stations_locations_file, sep=";")
     if not os.path.exists(dir_comparison_detections):
         os.mkdir(dir_comparison_detections)
-    comparison = Comparison(process_dates, aoi_file)
-    comparison.run_comparison()
+    for uba_station in uba_stations["name"]:
+        comparison = Comparison(uba_stations[uba_stations["name"] == uba_station]["bast_aoi"].iloc[0], aoi_file)
+        comparison.run_comparison()
   #  comparison.plot_s2_series()
     print("Done")
