@@ -18,7 +18,7 @@ from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
 from detect_trucks.ObjectExtractor import ObjectExtractor
 from detect_trucks.IO import IO
-from array_utils.math import rescale, normalized_ratio
+from array_utils.math import rescale_s2, normalized_ratio
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 from osm_utils.utils import get_roads, rasterize_osm
 
@@ -31,25 +31,23 @@ dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
 
-s2_files = [os.path.join(dirs["main"], "data", "s2", "subsets", f) for f in
-            ["S2A_MSIL2A_20200922T100031_N0214_R122_T33UWP_20200924T114821_y0_x0.tif",
-             "S2B_MSIL2A_20200828T100029_N0214_R122_T33UWP_20200828T120923_y0_x0.tif",
-             "S2B_MSIL2A_20201106T100219_N0214_R122_T33UWP_20201106T121510_y0_x0.tif"]]
+s2_files = [os.path.join("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\data\\s2\\archive",
+                        "s2_bands_Braunschweig-Flughafen_2018-06-06_2018-06-06_merged.tiff")]
 
-do_tuning = True
+do_tuning = False
 truth_path_training = os.path.join(dirs["truth"], "spectra_ml_training_tiles.csv")
 truth_path_validation = os.path.join(dirs["truth"], "spectra_ml_validation_tiles.csv")
 
-OSM_BUFFER = 20
+osm_buffer = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
 
 # RF hyper parameters from hyper parameter tuning
-N_ESTIMATORS = 294
-MIN_SAMPLES_SPLIT = 5
-MIN_SAMPLES_LEAF = 1
+N_ESTIMATORS = 1200
+MIN_SAMPLES_SPLIT = 8
+MIN_SAMPLES_LEAF = 2
 MAX_FEATURES = "sqrt"
-MAX_DEPTH = 20
-BOOTSTRAP = False
+MAX_DEPTH = 66
+BOOTSTRAP = True
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.pickle")
 
@@ -61,6 +59,7 @@ class RFTruckDetector:
         self.io = IO(self)
         self.lat, self.lon, self.meta = None, None, None
         self.variables = None
+        self.band_stack = None
         self.truth_variables, self.truth_labels = None, None
         self.truth_path_tmp = None
         self.var_mask_blue, self.var_mask_green, self.var_mask_red = None, None, None
@@ -76,7 +75,8 @@ class RFTruckDetector:
                                         min_samples_leaf=MIN_SAMPLES_LEAF,
                                         max_features=MAX_FEATURES,
                                         max_depth=MAX_DEPTH,
-                                        bootstrap=BOOTSTRAP)
+                                        bootstrap=BOOTSTRAP,
+                                        oob_score=True)
             self._load_truth()
             rf.fit(self.truth_variables["train"], self.truth_labels["train"])
             self.io.write_model(rf, MODEL_PATH)
@@ -103,7 +103,7 @@ class RFTruckDetector:
     def preprocess_bands(self, band_stack, subset_box=None):
         bands_rescaled = band_stack[0:4].copy()
         bands_rescaled[np.isnan(bands_rescaled)] = 0
-        bands_rescaled = rescale(bands_rescaled, 0, 1)
+        bands_rescaled = rescale_s2(bands_rescaled)
         bands_rescaled[bands_rescaled == 0] = np.nan
         band_stack = None
         self.lat, self.lon = lat_from_meta(self.meta), lon_from_meta(self.meta)
@@ -125,6 +125,7 @@ class RFTruckDetector:
         bands_rescaled[bands_rescaled == 0] = np.nan
         osm_mask = None
         self._build_variables(bands_rescaled)
+       # self.band_stack = band_stack.astype(np.float16)
 
     def mask_clouds(self, cloud_mask):
         cloud_mask = cloud_mask.astype(np.float32)
@@ -214,8 +215,6 @@ class RFTruckDetector:
         return arr
 
     def _postprocess_prediction(self):
-  #      for idx, threshold in zip(range(self.probabilities.shape[0]), (0.6, 0.3, 0.3, 0.3)):
-   #         self.probabilities[idx, self.probabilities[idx] < threshold] = 0
         classification = np.argmax(self.probabilities, 0) + 1
         return classification.astype(np.int8)
 
@@ -234,7 +233,7 @@ class RFTruckDetector:
 
     @staticmethod
     def get_arr_subset(arr, y, x, size):
-        pseudo_max = 1e+30
+        pseudo_max = np.inf
         size_low = int(size / 2)
         size_up = int(size / 2)
         size_up = size_up + 1 if (size_low + size_up) < size else size_up
@@ -289,7 +288,7 @@ class RFTruckDetector:
 
     @staticmethod
     def _get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
-        osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], OSM_BUFFER,
+        osm_file = get_roads(bbox, ["motorway", "trunk", "primary"], osm_buffer,
                              dir_out, str(bbox).replace(", ", "_").replace("-", "minus")[1:-1] + "_osm_roads", str(crs),
                              reference_arr)
         try:
