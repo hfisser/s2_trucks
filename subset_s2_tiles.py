@@ -7,8 +7,9 @@ import pandas as pd
 import fiona
 from shapely import geometry
 from pyproj import Transformer
+from shutil import rmtree
 from rasterio.transform import Affine
-from array_utils.math import rescale
+from array_utils.math import rescale_s2
 from osm_utils.utils import get_roads, rasterize_osm
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\data"
@@ -19,9 +20,8 @@ dir_write = os.path.join(os.path.dirname(dir_s2), "subsets")
 number_subsets = 1
 roads_buffer = 40
 tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"), sep=";")
-tiles = list(tiles_pd["training_tiles"])
 tiles = list(tiles_pd["validation_tiles"])
-tiles = ["T33UWP"]
+
 
 def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
     tgt_crs = "EPSG:4326"
@@ -46,7 +46,7 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
                     fname = files[np.where(band_names == b)[0][0]]
                     with rasterio.open(os.path.join(d2, fname)) as src:
                         tgt.write(src.read(1).astype(np.uint16), i+1)
-        a, b = src.transform * [0,0], src.transform * [src.height, src.width]
+        a, b = src.transform * [0, 0], src.transform * [src.height, src.width]
         src_corners = np.array([a[0], b[1], b[0], a[1]]).flatten()
         transformer = Transformer.from_crs(str(src_crs), tgt_crs)
         y0, x0 = transformer.transform(src_corners[0], src_corners[3])
@@ -102,7 +102,7 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
                                    "dtype": np.float32})
                     with rasterio.open(file_out, "w", **kwargs) as tgt:
                         for i in range(n_bands):
-                            data_band = rescale(data[i, y1:y2, x1:x2].astype(np.float32), 0., 1.)
+                            data_band = rescale_s2(data[i, y1:y2, x1:x2])
                             tgt.write((data_band * osm_raster).astype(np.float32), i+1)
                     os.remove(file_stack)
 
@@ -148,3 +148,21 @@ if __name__ == "__main__":
                 continue
             print("Processing: " + os.path.basename(directory))
             subset(directory, number_subsets, roads_buffer, dir_osm_roads, dir_write)
+
+"""
+bands = ["B04", "B03", "B02", "B12", "B11", "B8A", "B07", "B06", "B05"]
+d = r20
+files = glob(os.path.join(d, "*.jp2"))
+files_bands = [f.split("_")[-2] for f in files]
+band_data = []
+for b in bands:
+    file = files[np.where(np.array(files_bands) == b)[0][0]]
+    with rio.open(file, "r") as src:
+        meta = src.meta
+        data = src.read(1)
+        band_data.append(data)
+meta.update(count=len(band_data), driver="GTiff", dtype=np.float32)
+with rio.open("F:\\Masterarbeit\\THESIS\\general\\plots\\%s_bands_20m.tif" % os.path.basename(d), "w", **meta) as tgt:
+    for i, band in enumerate(band_data):
+        tgt.write(np.float32(band / 10000), i + 1)
+"""
