@@ -8,7 +8,7 @@ import xarray as xr
 import rasterio as rio
 from osm_utils.utils import get_roads, rasterize_osm
 from array_utils.io import rio_read_all_bands
-from array_utils.math import normalized_ratio
+from array_utils.math import normalized_ratio, rescale_s2
 from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox_epsg4326
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
@@ -18,7 +18,7 @@ dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
-mode = ["training_tiles", "validation_tiles"][0]
+mode = ["training_tiles", "validation_tiles"][1]
 tiles = list(tiles_pd[mode])
 
 overwrite_truth_csv = True
@@ -29,7 +29,7 @@ osm_buffer = 20
 def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
     spectra_ml = pd.read_csv(spectra_ml_csv, index_col=0)
     arr, meta = rio_read_all_bands(image_file)
-    arr = arr.astype(np.float32)
+    arr = rescale_s2(arr)
     osm_file = os.path.join(dir_osm, "osm%s" % os.path.basename(image_file))
     lat, lon = lat_from_meta(meta), lon_from_meta(meta)
     bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(meta)))
@@ -52,6 +52,7 @@ def extract_statistics(image_file, boxes_gpd, n_retain, spectra_ml_csv):
 #    boxes_training.index = range(len(boxes_training))
     boxes_training = boxes_gpd
     means_arr = [np.nanmean(arr[band_idx]) for band_idx in [0, 1, 2, 3]]
+    np.random.seed(99)
     for i in np.random.choice(list(range(len(boxes_training))), n_retain, replace=False):
         box = boxes_training.geometry[i].bounds
         x0, x1 = get_smallest_deviation(lon_shifted, box[0]), get_smallest_deviation(lon_shifted, box[2])
