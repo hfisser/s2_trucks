@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from glob import glob
+from matplotlib import rcParams
 from shapely.geometry import Point, box
 from fiona.errors import DriverError
 from datetime import date, timedelta
@@ -18,6 +19,8 @@ from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
 
+rcParams["font.serif"] = "Times New Roman"
+rcParams["font.family"] = "serif"
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_data = os.path.join(dir_main, "data")
@@ -27,6 +30,7 @@ dir_labels = os.path.join(dir_data, "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 dir_training = os.path.join(dir_main, "training")
 dir_s2_subsets = os.path.join(dir_data, "s2", "subsets")
+#dir_s2_subsets = "G:\\subsets_validation"
 
 truth_csv = os.path.join(dir_main, "truth", "spectra_ml.csv")
 aois_file = os.path.join(dir_validation, "data", "BAST", "validation_aois1.gpkg")
@@ -40,22 +44,33 @@ NAME_HOUR = "Stunde"
 NAME_TR1 = "Lkw_R1"
 NAME_TR2 = "Lkw_R2"
 
-OSM_BUFFER = 20
-hour, minutes, year = 10, 20, 2018
+osm_buffer = 20
+hour, minutes, year = 10, 10, 2018
 
 validate = "boxes"
-validate = "bast"
+#validate = "bast"
 
 stations = dict()
 bast_dir = os.path.dirname(aois_file)
 stations_pd = pd.read_csv(os.path.join(bast_dir, "validation_stations.csv"), sep=";")
 for station_name, start, end in zip(stations_pd["Name"], stations_pd["S2_date_start"], stations_pd["S2_date_end"]):
-    start, end = start.split("."), end.split(".")
-    stations[station_name] = ["-".join([split[2], split[1], split[0]]) for split in [start, end]]
+    if "Winnweiler" in station_name:
+        continue
+    else:
+        start, end = start.split("."), end.split(".")
+        stations[station_name] = ["-".join([split[2], split[1], split[0]]) for split in [start, end]]
+
+bs_flughafen = "Braunschweig-Flughafen"
+additional_stations = {"Braunschweig": bs_flughafen,
+                       "Wolfsburg": bs_flughafen,
+                       "Hoiersdorf": bs_flughafen,
+                       "Hinrichshagen": "Strasburg",
+                       "Sottrum": "Bockel"}
 
 
 class Validator:
     def __init__(self, station_denotation, station_aois_file, dir_validation_home, dir_osm_data):
+        print(station_denotation)
         aois = gpd.read_file(station_aois_file)
         self.dirs = {"validation": dir_validation_home, "osm": dir_osm_data,
                      "station_counts": os.path.join(dir_validation_home, "data", "BAST", "station_counts"),
@@ -73,8 +88,12 @@ class Validator:
         self.validation_file = os.path.join(self.dirs["validation"], "validation_run_%s.csv" % self.station_name_clear)
         self.station_name = self.station_name.split("(1)")[0] if self.station_name.endswith("(1)") else self.station_name
         self.station_meta = self.get_station_meta(self.station_name)
-        bbox = aois[aois["Name"] == self.station_name].geometry.bounds
-        self.bbox_epsg4326 = (float(bbox.miny), float(bbox.minx), float(bbox.maxy), float(bbox.maxx))  # min lat, min lon, max lat, max lon
+        bbox = aois[aois["Name"] == self.station_name].geometry.bounds.values.flatten()
+        if len(bbox) == 0:
+            contains_name = np.array([self.station_name_clear in curr_name for curr_name in aois["Name"]])
+            name_match = np.where(contains_name)[0][0]
+            bbox = aois.iloc[name_match].geometry.bounds
+        self.bbox_epsg4326 = (float(bbox[1]), float(bbox[0]), float(bbox[3]), float(bbox[2]))  # min lat, min lon, max lat, max lon
         self.crs = aois.crs
         self.lat, self.lon = None, None
         self.detections, self.osm_roads = None, None
@@ -99,16 +118,41 @@ class Validator:
 
             if not os.path.exists(dir_save_archive):
                 os.mkdir(dir_save_archive)
+            area_id = additional_stations[self.station_name_clear] if self.station_name_clear in additional_stations.keys() \
+                else self.station_name_clear
             sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])
             detections_file = os.path.join(self.dirs["detections"], "s2_detections_%s_%s.gpkg" %
-                                           (self.date, self.station_name_clear))
-            merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (self.station_name_clear,
+                                           (self.date, area_id))
+            merged_file = os.path.join(dir_save_archive, "s2_bands_%s_%s_%s_merged.tiff" % (area_id,
                                                                                             sub_period[0],
                                                                                             sub_period[1]))
-            if False:#os.path.exists(detections_file):
+            if os.path.exists(detections_file):
                 self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
                 continue
             else:
+
+                if os.path.exists(merged_file):
+                    detector = RFTruckDetector()
+                    band_stack = detector.read_bands(merged_file)
+                    detector.preprocess_bands(band_stack[0:4])
+                    prediction = detector.predict()
+                    prediction_boxes = detector.extract_objects(prediction)
+                    try:
+                        detector.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
+                    except ValueError:
+                        print("Number of detections: %s, cannot write" % len(prediction_boxes))
+                        continue
+                    self.detections_file = detections_file
+                    with rio.open(merged_file, "r") as src:
+                        meta = src.meta
+                    self.lat = lat_from_meta(meta)
+                    self.lon = lon_from_meta(meta)
+                    detector, band_stack_np = None, None
+                    self.validate_with_bast(sub_period[0], detections_file, station_file, merged_file)
+                    continue
+                else:
+                    continue
+
                 kwargs = dict(bbox=sh_bbox, period=sub_period, dataset=DataCollection.SENTINEL2_L2A,
                               bands=["B04", "B03", "B02", "B08"], resolution=resolution, dir_save=self.dirs["s2"],
                               merged_file=merged_file, mosaicking_order="leastCC")
@@ -195,9 +239,6 @@ class Validator:
         station_point = Point([self.station_meta["x"], self.station_meta["y"]])
         buffer_distance = distance_traveled * 1000
         station_buffer = station_point.buffer(buffer_distance)
-        if "Braunschweig-Flughafen" in self.station_name:  # rectangluar buffer due to another highway within buffer
-            sy, sx = station_point.y, station_point.x
-            station_buffer = box(sx - buffer_distance, sy - 1500, sx + buffer_distance, sy + 3000)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer],
                                               crs="EPSG:326" + str(self.station_meta["utm_zone"]))
         try:
@@ -246,7 +287,7 @@ class Validator:
         validation_pd.to_csv(self.validation_file)
 
     def prepare_s2_counts(self):
-        osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], OSM_BUFFER,
+        osm_file = get_roads(list(self.bbox_epsg4326), ["motorway", "trunk", "primary"], osm_buffer,
                              self.dirs["osm"],
                              str(self.bbox_epsg4326).replace(", ", "_")[1:-1].replace(".", "_")
                              + "_osm_roads", "EPSG:" + str(self.detections.crs.to_epsg()))
@@ -287,7 +328,7 @@ class Validator:
                 continue
             validation_boxes = gpd.read_file(glob(os.path.join(dir_labels, "*%s*.gpkg" % tile))[0])
             try:
-                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[0]
+                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[1000000000]
             except IndexError:
                 lens = np.int32([len(x) for x in imgs])
                 img_file = imgs[np.where(lens == lens.max())[0]][0]
@@ -314,7 +355,7 @@ class Validator:
             prediction_boxes = gpd.read_file(prediction_boxes_file)
             prediction_array, band_data, rf_td = None, None, None
             # iterate over score thresholds and plot precision and recall curve
-            for score_threshold in np.arange(0, 3, 0.25):
+            for score_threshold in np.arange(0, 3, 0.1):
                 prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
                 true_positive, user_positive = 0, 0
                 intersection_over_union = []
@@ -324,7 +365,7 @@ class Validator:
                             union = prediction_box.union(validation_box)
                             intersection = prediction_box.intersection(validation_box)
                             iou = intersection.area/union.area
-                            if iou > 0.5:
+                            if iou > 0.25:
                                 intersection_over_union.append(iou)
                                 true_positive += 1
                                 break
@@ -534,6 +575,7 @@ class Validator:
         offsets = (- 0.1, 0, 0, 0.01, -0.09, 0, 0, 0, 0, 0)
         labels, aucs, f_scores, scores = [], [], [], None
         for idx, file in enumerate(unique_files):
+            print(file)
             tile = file.split("_")[-5]
             labels.append(tile + " (%s)" % countries[tile])
             boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
@@ -543,38 +585,30 @@ class Validator:
             f_score = 2 * ((precision * recall) / (precision + recall))
             f_score[np.isnan(f_score)] = 0
             p = plt.plot(recall, precision)
-            a = np.round(auc(recall, precision), 2)
-   #         y_pos = np.min(precision[precision != 0]) - 0.03
-    #        y_pos = 1.02 if np.abs(y_pos - 1) < 0.02 else y_pos
-   #         plt.text(np.max(recall) + offsets[idx] + 0.01, y_pos, "AUC=%s" % a,
-    #                 fontsize=10, color=p[0].get_color())
-            aucs.append(a)
             f_scores.append(f_score)
   #      plt.text(0.74, 0.03,
    #              "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
     #             fontsize=10)
         plt.ylim(0, 1.1)
         plt.xlim(0, 1)
-        plt.ylabel("Precision", fontsize=10)
-        plt.xlabel("Recall", fontsize=10)
+        plt.ylabel("Precision")
+        plt.xlabel("Recall")
         plt.subplots_adjust(right=0.7)
-        plt.title("Recall vs. Precision", fontsize=12)
-        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
+        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5))
         plt.savefig(os.path.join(dir_validation_plots, "recall_precision_box_validation_lineplot.png"), dpi=600)
         plt.close()
         # plot f-score
         fig, ax = plt.subplots(figsize=(9, 5))
         for idx in range(len(f_scores)):
-            p = plt.plot(scores, f_scores[idx])
+            ax.plot(scores, f_scores[idx])
         p = plt.plot(scores, np.nanmean(np.float32(f_scores), 0), linewidth=2.5, linestyle="--", color="black")
         plt.ylim(0, 1)
         plt.xlim(0, np.max(scores))
-        plt.ylabel("F-score", fontsize=10)
-        plt.xlabel("Detection score", fontsize=10)
+        plt.ylabel("F-score")
+        plt.xlabel("Detection score")
         plt.subplots_adjust(right=0.7)
         labels.append("Mean")
-        plt.title("Detection score vs. F-score", fontsize=12)
-        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5), fontsize=10)
+        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5))
         plt.savefig(os.path.join(dir_validation_plots, "fscore_vs_score_validation_lineplot.png"), dpi=600)
         plt.close()
 
@@ -591,7 +625,10 @@ if __name__ == "__main__":
         except FileNotFoundError:
             pass
     for station, acquisition_period in stations.items():
-        validator = Validator(station, aois_file, dir_validation, dir_osm)
+        try:
+            validator = Validator(station, aois_file, dir_validation, dir_osm)
+        except KeyError:
+            continue
         if validate == "boxes":
             validator.validate_boxes()
             validator.plot_box_validation_recall_precision(boxes_validation_file)
