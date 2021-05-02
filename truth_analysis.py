@@ -13,12 +13,13 @@ from array_utils.geocoding import lat_from_meta, lon_from_meta, metadata_to_bbox
 
 dir_main = "F:\\Masterarbeit\\DLR\\project\\1_truck_detection"
 dir_imgs = os.path.join(dir_main, "data", "s2", "subsets")
+dir_imgs = "G:\\subsets_training"
 dir_truth = os.path.join(dir_main, "truth")
 dir_truth_labels = os.path.join(dir_main, "data", "labels")
 dir_osm = os.path.join(dir_main, "code", "detect_trucks", "AUXILIARY", "osm")
 
 tiles_pd = pd.read_csv(os.path.join(dir_main, "training", "tiles.csv"), sep=";")
-mode = ["training_tiles", "validation_tiles"][1]
+mode = ["training_tiles", "validation_tiles"][0]
 tiles = list(tiles_pd[mode])
 
 overwrite_truth_csv = True
@@ -191,10 +192,10 @@ def extract_rgb_spectra(t, sub_reflectances, sub_ratios, means):
         t.loc[row_idx, "blue"] = stack[2]
         t.loc[row_idx, "nir"] = stack[3]
         t.loc[row_idx, "ndvi"] = ndvi[y, x]
-        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized, 0)
-        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized, 0)
-        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack_normalized[0], stack_normalized[2])
-        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack_normalized[1], stack_normalized[2])
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack, 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack, 0)
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
         t.loc[row_idx, "red_normalized"] = stack_normalized[0]
         t.loc[row_idx, "green_normalized"] = stack_normalized[1]
         t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
@@ -228,14 +229,14 @@ def add_background(t, reflectances, ratios, means, n_background):
         t.loc[row_idx, "blue"] = stack[2]
         t.loc[row_idx, "nir"] = stack[3]
         t.loc[row_idx, "ndvi"] = ndvi[y_arr_idx, x_arr_idx]
-        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack_normalized[0:3], 0)
-        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack_normalized[0:3], 0)
+        t.loc[row_idx, "reflectance_std"] = np.nanstd(stack[0:3], 0)
+        t.loc[row_idx, "reflectance_var"] = np.nanvar(stack[0:3], 0)
         t.loc[row_idx, "red_normalized"] = stack_normalized[0]
         t.loc[row_idx, "green_normalized"] = stack_normalized[1]
         t.loc[row_idx, "blue_normalized"] = stack_normalized[2]
         t.loc[row_idx, "nir_normalized"] = stack_normalized[3]
-        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack_normalized[0], stack_normalized[2])
-        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack_normalized[1], stack_normalized[2])
+        t.loc[row_idx, "red_blue_ratio"] = normalized_ratio(stack[0], stack[2])
+        t.loc[row_idx, "green_blue_ratio"] = normalized_ratio(stack[1], stack[2])
         t.loc[row_idx, "red_global_mean"] = means[0]
         t.loc[row_idx, "green_global_mean"] = means[1]
         t.loc[row_idx, "blue_global_mean"] = means[2]
@@ -253,27 +254,6 @@ def get_osm_mask(bbox, crs, reference_arr, lat_lon_dict, dir_out):
     osm_raster[osm_raster != 0] = 1
     osm_raster[osm_raster == 0] = np.nan
     return osm_raster
-
-
-def expose_anomalous_pixels(band_stack_np):
-    w = 50
-    y_bound, x_bound = band_stack_np.shape[1], band_stack_np.shape[2]
-    roads = np.zeros((3, band_stack_np.shape[1], band_stack_np.shape[2]), dtype=np.float32)
-    for y in range(int(np.round(y_bound / w))):
-        for x in range(int(np.round(x_bound / w))):
-            y_idx, x_idx = np.clip((y + 1) * w, 0, y_bound), np.clip((x + 1) * w, 0, x_bound)
-            y_low, x_low = int(np.clip(y_idx - w, 0, 1e+30)), int(np.clip(x_idx - w, 0, 1e+30))
-            y_up, x_up = np.clip(y_idx + w + 1, 0, y_bound), np.clip(x_idx + w + 1, 0, x_bound)
-            y_size, x_size = (y_up - y_low), (x_up - x_low)
-            n = y_size * x_size
-            subset = band_stack_np[:, y_low:y_up, x_low:x_up]
-            roads[0, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[0]), n).reshape(y_size, x_size)
-            roads[1, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[1]), n).reshape(y_size, x_size)
-            roads[2, y_low:y_up, x_low:x_up] = np.repeat(np.nanmedian(subset[2]), n).reshape(y_size, x_size)
-    diff_red = (band_stack_np[0] - (roads[0] / 2)) / (band_stack_np[0] + (roads[0] / 2))
-    diff_green = (band_stack_np[1] - (roads[1] / 2)) / (band_stack_np[1] + (roads[1] / 2))
-    diff_blue = (band_stack_np[2] - (roads[2] / 2)) / (band_stack_np[2] + (roads[2] / 2))
-    return np.float32([diff_red, diff_green, diff_blue])
 
 
 if __name__ == "__main__":
