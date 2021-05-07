@@ -13,7 +13,7 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["labels"] = os.path.join(dirs["main"], "data", "labels")
 dirs["plots"] = os.path.join("F:" + os.sep + "Masterarbeit", "THESIS", "general", "plots")
 dirs["truth"] = os.path.join(dirs["main"], "truth")
-training_validation_tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
+training_validation_tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"))
 truth_path_training = os.path.join(dirs["truth"], "spectra_ml_training_tiles.csv")
 truth_path_validation = os.path.join(dirs["truth"], "spectra_ml_validation_tiles.csv")
 
@@ -44,7 +44,7 @@ def plot_box_size(tiles_pd):
             all_boxes[column].append(gpd.GeoDataFrame({"geometry": boxes_subset}, crs=boxes.crs))
     hw = {}
     all_areas, all_widths, all_heights = [], [], []
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    fig, ax = plt.subplots(figsize=(3.5, 3))
     for key, value, idx in zip(all_boxes.keys(), all_boxes.values(), range(2)):
         areas, widths, heights = [], [], []
         for boxes in value:
@@ -59,18 +59,20 @@ def plot_box_size(tiles_pd):
         all_areas.append(areas)
         all_widths.append(widths)
         all_heights.append(heights)
-    idx = 0
+#    idx = 0
     all_areas = np.hstack(all_areas)
-    parts = axes[idx].violinplot(all_areas, showmeans=False, showextrema=False)
+    parts = ax.violinplot(all_areas, showmeans=False, showextrema=False)
     for pc in parts["bodies"]:
         pc.set_alpha(1)
         pc.set_facecolor(color)
     quartile1, medians, quartile3 = np.percentile(all_areas, [25, 50, 75])
     inds = np.arange(1, 2)
-    axes[idx].scatter(inds, medians, marker="o", color="white", s=30, zorder=3)
-    axes[idx].vlines(inds, quartile1, quartile3, color="k", linestyle="-", lw=5)
-    axes[idx].set_title("%s (n=%s)" % ("Number of pixels/box", len(all_areas)))
-    axes[idx].set_ylabel("Number of pixels")
+    ax.scatter(inds, medians, marker="o", color="white", s=30, zorder=3)
+    ax.vlines(inds, quartile1, quartile3, color="k", linestyle="-", lw=5)
+ #   axes[idx].set_title("%s (n=%s)" % ("Number of pixels/box", len(all_areas)))
+    ax.set_ylabel("Number of pixels")
+    ax.set_xticks([])
+    ax.set_xticklabels([])
 #    plt.savefig(os.path.join(dirs["plots"], "training_validation_box_dimensions_violinplot.png"), dpi=500)
  #   plt.close()
     means = {}
@@ -88,12 +90,13 @@ def plot_box_size(tiles_pd):
     mean_values = np.array(list(means.values())).flatten()
     argsorted = np.argsort(mean_values)[::-1]
     countries = np.array(countries).flatten()
-    axes[1].bar(list(range(len(countries))), np.float32(mean_values)[argsorted], color=color)
-    axes[1].set_ylabel("Number of pixels")
-    axes[1].set_xticks(list(range(len(countries))))
-    axes[1].set_xticklabels(np.array(countries)[argsorted], rotation=90)
-    axes[1].set_ylim(0, 7.5)
-    axes[1].set_title("Number of pixels/box by country")
+#    ax.bar(list(range(len(countries))), np.float32(mean_values)[argsorted], color=color)
+ #   ax.set_ylabel("Number of pixels")
+  #  ax.set_xticks(list(range(len(countries))))
+   # ax.set_xticklabels(np.array(countries)[argsorted], rotation=90)
+    #ax.set_ylim(0, 7.5)
+    #ax.set_title("Number of pixels/box by country")
+    plt.tight_layout()
     plt.savefig(os.path.join(dirs["plots"], "box_areas_summary.png"), dpi=500)
     plt.close()
 
@@ -141,7 +144,33 @@ def plot_truck_rgb_spectra(truth_training_csv, truth_validation_csv):
     truth_training_pd = pd.read_csv(truth_training_csv)
     truth_validation_pd = pd.read_csv(truth_validation_csv)
     truth_pd = pd.concat([truth_training_pd, truth_validation_pd])
-    fig, axes = plt.subplots(4, 1, figsize=(5, 5))
+    #fig, axes = plt.subplots(4, 1, figsize=(5, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(9, 2))
+    labels = ["red", "green", "blue", "background"]
+    colors = ["#FF0000", "#00FF00", "#0000FF", "#000000"]
+    bands = ["B02", "B03", "B04", "B08"]
+    vis_std = []
+    vis_nir_std = []
+    for ax, label, color in zip(axes.flatten(), labels, colors):
+        values = np.float32([truth_pd[truth_pd.label == label][b] for b in ["blue", "green", "red", "nir"]])
+        mean_values, std_values = values.mean(1), values.std(1)
+        vis_std.append(mean_values[0:3].std())
+        vis_nir_std.append(mean_values.std())
+        ax.plot(bands, mean_values, color=color, linewidth=2)
+        ax.fill_between(bands, mean_values - std_values, mean_values + std_values, color=color, alpha=0.3)
+#        ax.plot(bands, mean_values - std_values, color=color, linewidth=0.5)
+ #       ax.plot(bands, mean_values + std_values, color=color, linewidth=0.5)
+        ax.scatter(bands, values.mean(1), color=color, alpha=0.5, s=20)
+        ax.set_ylim(0, 0.3)
+        ax.margins(x=0)
+        ax.set_title("'%s'" % label)
+        if ax == axes[0]:
+            ax.set_ylabel("Reflectance")
+    plt.tight_layout()
+    plt.savefig(os.path.join(dirs["plots"], "label_band_spectra.png"), dpi=500)
+    plt.close()
+
+    """
     shape = axes.shape
     labels = ["red", "green", "blue", "background"]
     bands = ["red", "green", "blue", "nir"]
@@ -165,10 +194,11 @@ def plot_truck_rgb_spectra(truth_training_csv, truth_validation_csv):
         axes[y].set_xticks([])
         axes[y].set_title("'%s'" % labels[y])
     plt.tight_layout()
+    """
 
 
 if __name__ == "__main__":
     plot_box_size(training_validation_tiles_pd)
-    plot_truck_rgb(truth_path_training, truth_path_validation)
+   # plot_truck_rgb(truth_path_training, truth_path_validation)
     plot_truck_rgb_spectra(truth_path_training, truth_path_validation)
 
