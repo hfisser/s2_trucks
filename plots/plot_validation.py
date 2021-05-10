@@ -3,7 +3,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib import rcParams
 from scipy.stats import linregress
+
+rcParams["font.serif"] = "Times New Roman"
+rcParams["font.family"] = "serif"
 
 dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["plots"] = os.path.join("F:" + os.sep + "Masterarbeit", "THESIS", "general", "plots")
@@ -54,7 +58,7 @@ def plot_bast_validation(bast_validation):
         regress = linregress(x=s2, y=bast)
         position = positions[int(direction) - 1]
         plt.text(position[0], position[1],
-                 "Direction%s\nLin. regression\nrsquared=%s\nslope=%s" % (direction, np.round(regress.rvalue, 2),
+                 "Direction%s\nLin. regression\nr-value=%s\nslope=%s" % (direction, np.round(regress.rvalue, 2),
                                                                           np.round(regress.slope, 2)), fontsize=8)
     plt.ylabel("BAST Lzg")
     plt.xlabel("Sentinel-2 count")

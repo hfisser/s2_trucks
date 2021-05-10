@@ -44,7 +44,7 @@ def plot_box_size(tiles_pd):
             all_boxes[column].append(gpd.GeoDataFrame({"geometry": boxes_subset}, crs=boxes.crs))
     hw = {}
     all_areas, all_widths, all_heights = [], [], []
-    fig, ax = plt.subplots(figsize=(3.5, 3))
+    fig, ax = plt.subplots(figsize=(2, 1.5))
     for key, value, idx in zip(all_boxes.keys(), all_boxes.values(), range(2)):
         areas, widths, heights = [], [], []
         for boxes in value:

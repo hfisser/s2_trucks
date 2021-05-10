@@ -14,13 +14,18 @@ rcParams["font.family"] = "serif"
 dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["training"] = os.path.join(dirs["main"], "training")
 dirs["plots"] = os.path.join("F:" + os.sep + "Masterarbeit", "THESIS", "general", "plots")
-tiles_pd = pd.read_csv(os.path.join(dirs["training"], "tiles.csv"), sep=";")
+tiles_pd = pd.read_csv(os.path.join(dirs["training"], "tiles.csv"), sep=",")
 truth_pd = pd.read_csv(os.path.join(dirs["main"], "truth", "spectra_ml_training_tiles.csv"))
 
 
 COLORS = ["#2e2e2e", "#0000ff", "#00ff00", "#ff0000"]
 LABEL_INTS, LABELS = [1, 2, 3, 4], ["background", "blue", "green", "red"]
+FEATURES = ["blue_normalized", "green_normalized", "red_normalized", "nir_normalized",
+            "green_blue_ratio", "red_blue_ratio", "reflectance_var"]
 
+#truth_pd["red_blue_ratio"] = (truth_pd["red"] - truth_pd["blue"]) / (truth_pd["red"] + truth_pd["blue"])
+#truth_pd["green_blue_ratio"] = (truth_pd["green"] - truth_pd["blue"]) / (truth_pd["green"] + truth_pd["blue"])
+#truth_pd["reflectance_var"] = np.var(np.float32([truth_pd["red"], truth_pd["green"], truth_pd["blue"]]).swapaxes(0, 1), 1)
 
 def plot_labels_relative(tiles, area_columns):
     fig, ax = plt.subplots(figsize=(8, 2))
@@ -90,7 +95,7 @@ def plot_label_distribution(truth):
     plt.savefig(os.path.join(dirs["plots"], "label_distribution_barplot.png"), dpi=300)
     plt.close()
 
-
+"""
 def plot_label_stats(truth):
     variable_names = ["red_normalized", "green_normalized", "blue_normalized", "reflectance_var", "red_blue_ratio",
                       "green_blue_ratio"]
@@ -113,7 +118,7 @@ def plot_label_stats(truth):
         ax.set_ylabel("Normalized\nreflectance", fontsize=12)
         ax.set_xticklabels(rgb_variables, fontsize=12)
         ax.set_xlabel("")
-        ax.set_title("Normalized reflectances at '%s' label" % label, fontsize=12)
+        ax.set_title("Normalized reflectances at '%s' label" % label)
         plt.savefig(os.path.join(dirs["plots"], "reflectances_at_%s_label_violinplot.png" % label))
         plt.close()
         variances.append(variables[:, 3])  # for plotting all together
@@ -142,19 +147,56 @@ def plot_label_stats(truth):
     ax.set_title("Variance of normalized RGB reflectances by label", fontsize=12)
     plt.savefig(os.path.join(dirs["plots"], "rgb_variances_all_labels_violinplot.png"), dpi=300)
     plt.close()
+"""
+
+
+def plot_label_stats(truth):
+    fig, axes = plt.subplots(4, 3, figsize=(10, 6), gridspec_kw={"width_ratios": [3, 2, 1]})
+    ax_features = [FEATURES[:4], FEATURES[4:6], [FEATURES[-1]]]
+    ax_features_clear = [["B02_centered", "B03_centered", "B04_centered", "B08_centered"],
+                         ["B03_B02_ratio", "B04_B02_ratio"], ["reflectance_variance"]]
+    colors = [["#0000ff", "#00ff00", "#ff0000", "#7c0912"], ["#39e7ad", "#dc4ff0"], ["#757575"]]
+    for label_idx, label, row_axes in zip(range(len(axes)), ["blue", "green", "red", "background"], axes):
+        row_axes = row_axes.flatten()
+        for ax_idx, ax in enumerate(row_axes):
+            ax_values = []
+            for feature_idx, feature in enumerate(ax_features[ax_idx]):
+                ax_values.append(np.float32(truth[truth["label"] == label][feature]))
+            xticks = np.arange(0, len(ax_values) * 0.6, 0.6)
+            parts = ax.violinplot(ax_values, positions=xticks,
+                                  showmedians=False, showmeans=True, showextrema=False)
+            parts["cmeans"].set_edgecolor("black")
+            for pc, color in zip(parts["bodies"], colors[ax_idx]):
+                pc.set_facecolor(color)
+                pc.set_alpha(1)
+            if ax_idx == 0:
+                ax.set_ylim(-0.25, 0.25)
+                ax.text(-1.4, -0.02, "'%s'" % label, fontsize=13)  # place class label
+            elif ax_idx == 1:
+                ax.set_ylim(-0.7, 0.7)
+            elif ax_idx == 2:
+                ax.set_ylim(0, 0.004)
+            if label_idx == 3:
+                ax.set_xticklabels(ax_features_clear[ax_idx])
+                ax.set_xticks(xticks)
+            else:
+                ax.set_xticks([])
+                ax.set_xticklabels([])
+    for title, ax in zip(["Centered band reflectances", "Band ratios", "VIS variance"], axes[0]):
+        ax.set_title(title)
+    plt.tight_layout()
+    plt.savefig(os.path.join(dirs["plots"], "featuere_statistics_violinplot.png"), dpi=600)
+    plt.close()
 
 
 def plot_feature_correlation(truth):
-    sns.set_theme(style="white")
-    cols = ["blue_normalized", "green_normalized", "red_normalized", "nir_normalized",
-            "green_blue_ratio", "red_blue_ratio", "reflectance_var"]
     labels = ["B02_centered", "B03_centered", "B04_centered", "B08_centered", "B03_B02_ratio",
               "B04_B02_ratio", "reflectance_variance"]
-    correlation_matrix = np.zeros((len(cols), len(cols)))
-    for i, y in enumerate(cols):
-        for j, x in enumerate(cols):
+    correlation_matrix = np.zeros((len(FEATURES), len(FEATURES)))
+    for i, y in enumerate(FEATURES):
+        for j, x in enumerate(FEATURES):
             correlation_matrix[i, j] = pearsonr(truth[x], truth[y])[0]
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(5, 5))
     cmap = cm.YlGn.__copy__()
     im = plt.imshow(correlation_matrix, cmap=cmap)
     shape = correlation_matrix.shape
@@ -165,7 +207,7 @@ def plot_feature_correlation(truth):
     ax.xaxis.set_tick_params(labelsize=10)
     ax.yaxis.set_tick_params(labelsize=10)
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    plt.subplots_adjust(bottom=0.25, left=0.25)
+    plt.subplots_adjust(bottom=0.25, left=0.4, right=1)
     plt.colorbar(im, fraction=0.02, pad=0.02)
     # add numeric labels inside plot
     for i in range(shape[0]):
