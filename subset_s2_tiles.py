@@ -19,7 +19,7 @@ s2_directories = [os.path.join(dir_s2, x) for x in os.listdir(dir_s2)]
 dir_write = os.path.join(os.path.dirname(dir_s2), "subsets")
 number_subsets = 1
 roads_buffer = 40
-tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"), sep=";")
+tiles_pd = pd.read_csv(os.path.join(os.path.dirname(dir_main), "training", "tiles.csv"))
 tiles = list(tiles_pd["validation_tiles"])
 
 
@@ -39,13 +39,14 @@ def subset(d, n_subs, osm_buffer, dir_osm, dir_out):
         src = rasterio.open(os.path.join(d2, files[0]))
         kwargs = src.meta.copy()
         src_crs = src.crs
-        kwargs.update({"count": len(bands), "dtype": np.uint16, "driver": "GTiff"})
+        kwargs.update({"count": len(bands), "dtype": np.float32, "driver": "GTiff"})
         if not os.path.exists(file_stack):
             with rasterio.open(file_stack, "w", **kwargs) as tgt:
                 for i, b in enumerate(bands):
                     fname = files[np.where(band_names == b)[0][0]]
                     with rasterio.open(os.path.join(d2, fname)) as src:
-                        tgt.write(src.read(1).astype(np.uint16), i+1)
+                        tgt.write(rescale_s2(src.read(1)).astype(np.float32), i+1)
+        return
         a, b = src.transform * [0, 0], src.transform * [src.height, src.width]
         src_corners = np.array([a[0], b[1], b[0], a[1]]).flatten()
         transformer = Transformer.from_crs(str(src_crs), tgt_crs)
