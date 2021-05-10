@@ -41,14 +41,15 @@ BAST_URL = "https://www.bast.de/BASt_2017/DE/Verkehrstechnik/Fachthemen/v2-verke
            "zaehl_aktuell_node.html;jsessionid=63610843F87B77C24C4320BC4EAD6647.live21304"
 NAME_DATE = "Datum"
 NAME_HOUR = "Stunde"
-NAME_TR1 = "Lkw_R1"
-NAME_TR2 = "Lkw_R2"
+NAME_TR1 = "Lzg_R1"
+NAME_TR2 = "Lzg_R2"
+S2_COLOR, BAST_COLOR = "#611840", "#3e6118"
 
 osm_buffer = 20
 hour, minutes, year = 10, 10, 2018
 
 validate = "boxes"
-#validate = "bast"
+validate = "bast"
 
 stations = dict()
 bast_dir = os.path.dirname(aois_file)
@@ -59,6 +60,7 @@ for station_name, start, end in zip(stations_pd["Name"], stations_pd["S2_date_st
     else:
         start, end = start.split("."), end.split(".")
         stations[station_name] = ["-".join([split[2], split[1], split[0]]) for split in [start, end]]
+
 
 bs_flughafen = "Braunschweig-Flughafen"
 additional_stations = {"Braunschweig": bs_flughafen,
@@ -116,8 +118,8 @@ class Validator:
 
             dir_save_archive = "G:\\archive"
 
-            if not os.path.exists(dir_save_archive):
-                os.mkdir(dir_save_archive)
+         #   if not os.path.exists(dir_save_archive):
+          #      os.mkdir(dir_save_archive)
             area_id = additional_stations[self.station_name_clear] if self.station_name_clear in additional_stations.keys() \
                 else self.station_name_clear
             sh_bbox = (self.bbox_epsg4326[1], self.bbox_epsg4326[0], self.bbox_epsg4326[3], self.bbox_epsg4326[2])
@@ -229,16 +231,22 @@ class Validator:
         speed = 80
         try:
             self.detections = gpd.read_file(detections_file)
+            self.detections = self.detections[self.detections["score"] > 1.2]
         except DriverError:
             self.detections = gpd.GeoDataFrame()
         else:
             self.prepare_s2_counts()
+      #  self.detections = self.detections[self.detections.score >= 1.1]
         hour_proportion = (minutes / 60)
         distance_traveled = hour_proportion * speed
         station_counts = pd.read_csv(station_file, sep=";")
         station_point = Point([self.station_meta["x"], self.station_meta["y"]])
         buffer_distance = distance_traveled * 1000
-        station_buffer = station_point.buffer(buffer_distance)
+        if "Braunschweig-Flughafen" in detections_file:
+            station_buffer = box(station_point.x - buffer_distance, station_point.y - 1000,
+                                 station_point.x + buffer_distance, station_point.y + 3000)
+        else:
+            station_buffer = station_point.buffer(buffer_distance)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer],
                                               crs="EPSG:326" + str(self.station_meta["utm_zone"]))
         try:
@@ -313,7 +321,7 @@ class Validator:
         self.detections = gpd.GeoDataFrame(detections_within, crs=self.detections.crs)
 
     def validate_boxes(self):
-        tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=";")
+        tiles_pd = pd.read_csv(os.path.join(dir_training, "tiles.csv"), sep=",")
         try:
             os.remove(boxes_validation_file)
         except FileNotFoundError:
@@ -328,7 +336,7 @@ class Validator:
                 continue
             validation_boxes = gpd.read_file(glob(os.path.join(dir_labels, "*%s*.gpkg" % tile))[0])
             try:
-                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[1000000000]
+                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[1000000]  # fail
             except IndexError:
                 lens = np.int32([len(x) for x in imgs])
                 img_file = imgs[np.where(lens == lens.max())[0]][0]
@@ -355,9 +363,9 @@ class Validator:
             prediction_boxes = gpd.read_file(prediction_boxes_file)
             prediction_array, band_data, rf_td = None, None, None
             # iterate over score thresholds and plot precision and recall curve
-            for score_threshold in np.arange(0, 3, 0.1):
+            for score_threshold in np.arange(0, 2, 0.1):
                 prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
-                true_positive, user_positive = 0, 0
+                tp = 0
                 intersection_over_union = []
                 for prediction_box in prediction_boxes.geometry:
                     for validation_box in validation_boxes.geometry:
@@ -367,25 +375,27 @@ class Validator:
                             iou = intersection.area/union.area
                             if iou > 0.25:
                                 intersection_over_union.append(iou)
-                                true_positive += 1
+                                tp += 1
                                 break
-                for validation_box in validation_boxes.geometry:
-                    for prediction_box in prediction_boxes.geometry:
-                        if validation_box.intersects(prediction_box):
-                            union = prediction_box.union(validation_box)
-                            intersection = prediction_box.intersection(validation_box)
-                            iou = intersection.area/union.area
-                            if iou > 0.5:
-                                user_positive += 1
-                            break
+            #    for validation_box in validation_boxes.geometry:
+             #       for prediction_box in prediction_boxes.geometry:
+              #          if validation_box.intersects(prediction_box):
+               #             union = prediction_box.union(validation_box)
+                #            intersection = prediction_box.intersection(validation_box)
+                 #           iou = intersection.area/union.area
+                  #          if iou > 0.25:
+                   #             validation_positive += 1
+                    #        break
                 try:
-                    precision = true_positive / len(prediction_boxes)
+                    precision = tp / len(prediction_boxes)
                 except ZeroDivisionError:
                     precision = 0
-                false_negative = len(validation_boxes) - user_positive
-                recall = true_positive / (true_positive + false_negative)
+                fn = len(validation_boxes) - tp
+                fp = len(prediction_boxes) - tp
+                recall = tp / (tp + fn)
                 row_idx = len(boxes_validation_pd)
                 boxes_validation_pd.loc[row_idx, "detection_file"] = prediction_boxes_file
+                boxes_validation_pd.loc[row_idx, "accuracy"] = tp / (tp + fp + fn)
                 boxes_validation_pd.loc[row_idx, "precision"] = precision
                 boxes_validation_pd.loc[row_idx, "recall"] = recall
                 boxes_validation_pd.loc[row_idx, "score_threshold"] = score_threshold
@@ -509,20 +519,21 @@ class Validator:
     def plot_bast_comparison(validation_file):
         s2_columns = ["s2_direction1", "s2_direction2"]
         s2_labels = ["S2 direction 1", "S2 direction 2"]
-        lzg_columns, lzg_labels = ["Lzg_R1", "Lzg_R2"], ["BAST Lzg direction 1", "BAST Lzg direction 2"]
+        lzg_columns, lzg_labels = [NAME_TR1, NAME_TR2], ["BAST Lzg direction 1", "BAST Lzg direction 2"]
         all_columns = np.hstack([s2_columns, lzg_columns, "KFZ_R1", "KFZ_R2"])
-        all_labels = np.hstack([s2_labels, lzg_labels,
-                                "BAST Kfz direction 1", "BAST Kfz direction 2"])
+        all_labels = np.hstack([s2_labels, lzg_labels, "BAST Kfz direction 1", "BAST Kfz direction 2"])
+        all_labels = ["Sentinel-2", "BAST Lzg", "BAST Kfz"]
         s2_lzg_columns = np.hstack([s2_columns, lzg_columns])
         s2_lzg_labels = np.hstack([s2_labels, lzg_labels])
+        s2_lzg_labels = all_labels[:-1]
         for columns, labels, suffix in zip([s2_lzg_columns, all_columns], [s2_lzg_labels, all_labels],
                                            ["Lzg", "Lzg_Kfz"]):
-            s2_color, bast_lzg_color = "#5e128a", "#33bd2b",
-            sns.set(rc={"figure.figsize": (9, 5)})
-            sns.set_theme(style="whitegrid")
+          #  sns.set(rc={"figure.figsize": (9, 5)})
+           # sns.set_theme(style="whitegrid")
+            fix, ax = plt.subplots(figsize=(7, 3))
             validation = pd.read_csv(validation_file)
             unique_dates = np.unique(validation["date"])
-            colors = [s2_color, "#f542cb", bast_lzg_color, "#abc70a"]
+            colors = [S2_COLOR, "#f542cb", BAST_COLOR, "#abc70a"]
             if len(columns) > 4:
                 colors.append("#185a61")  # for kfzs
                 colors.append("#4dd0de")
@@ -531,85 +542,196 @@ class Validator:
                 idx = np.where(validation["date"] == acquisition_date)[0][0]
                 row = validation.iloc[idx]
                 counts[i] = np.int16([np.int16(row[column]) for column in columns])
-            for i, c in enumerate(colors):
-                ax = sns.lineplot(x=unique_dates, y=counts[:, i], color=c)
-            plt.legend(labels, bbox_to_anchor=(1.35, 0.5), fontsize=10, loc="center right")
-            plt.subplots_adjust(bottom=0.2, right=0.8)
+         #   for i, c in enumerate(colors):
+          #      ax.plot(unique_dates, counts[:, i], color=c)
+            ax.plot(unique_dates, np.sum(counts[:, 0:2], 1), color=S2_COLOR, linewidth=2)
+            ax.plot(unique_dates, np.sum(counts[:, 2:4], 1), color=BAST_COLOR, linewidth=2)
+            if "KFZ_R1" in columns:
+                ax.plot(unique_dates, np.sum(counts[:, 4:], 1), color="#185a61", linewidth=2)
+            plt.legend(labels, bbox_to_anchor=(1.25, 0.5), fontsize=10, loc="center right")
+            plt.subplots_adjust(bottom=0.2, right=0.9)
             plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
             ax.xaxis.set_tick_params(labelsize=10)
             ax.yaxis.set_tick_params(labelsize=10)
             title = "Sentinel-2 & BAST counts " + validation_file.split("_")[-1].split(".csv")[0]
-            plt.title(title, fontsize=12)
+      #      plt.title(title, fontsize=12)
             plt.tight_layout()
             fname = title.replace(" ", "_")
-            plt.savefig(os.path.join(dir_validation_plots, "%s_%s_lineplot.png" % (fname, suffix)), dpi=300)
+            plt.savefig(os.path.join(dir_validation_plots, "%s_%s_lineplot.png" % (fname, suffix)), dpi=500)
             plt.close()
             # scatter
             fig, ax = plt.subplots(figsize=(6, 4))
-            sns.set_theme(style="whitegrid")
             s2, bast = counts[:, 0] + counts[:, 1], counts[:, counts.shape[1] - 2] + counts[:, counts.shape[1] - 1]
-            c, position = "#0c7a77", [15, np.max(s2) + 30]
-            ax = sns.scatterplot(x=s2, y=bast, color=c)
-            ax = sns.regplot(x=s2, y=bast, color=c)
+            c, position = S2_COLOR, [10, 10]
+            ax.scatter(x=s2, y=bast, color=c)
             regress = linregress(x=s2, y=bast)
-            plt.text(40, position[1],
+            m, b = np.polyfit(s2, bast, 1)
+            ax.plot(s2, m * s2 + b, color="#e5df1b", alpha=0.8)
+            plt.text(np.nanquantile(s2, [0.99])[0] + 15, np.nanquantile(bast, [0.85])[0],
                      "Lin. regression\npearson r-value=%s\nslope=%s" % (np.round(regress.rvalue, 2),
-                                                                 np.round(regress.slope, 2)), fontsize=8)
+                                                                 np.round(regress.slope, 2)), fontsize=11)
+            plt.subplots_adjust(right=0.9)
             label = labels[-1][:8]
-            plt.ylabel(label, fontsize=10)
-            plt.xlabel("Sentinel-2 count", fontsize=10)
-            plt.title("Sentinel-2 trucks vs. %s" % label, fontsize=12)
+            plt.ylabel(label)
+            plt.xlabel("Sentinel-2 count")
+#            plt.title("Sentinel-2 trucks vs. %s" % label)
             plt.tight_layout()
             plt.savefig(os.path.join(dir_validation_plots, "%s_%s_scatterplot.png" % (fname, label.replace(" ", ""))),
-                        dpi=300)
+                        dpi=500)
             plt.close()
 
     @staticmethod
     def plot_box_validation_recall_precision(box_validation_csv):
+        c = "#330432"
         boxes_validation = pd.read_csv(box_validation_csv)
-        fig, ax = plt.subplots(figsize=(9, 5))
         unique_files = np.unique(boxes_validation["detection_file"])
+        fig, axes = plt.subplots(2, int(len(unique_files) * 0.5), figsize=(10, 4))
         countries = {"T34UDC": "Poland", "T29SND": "Portugal", "T31UFS": "Belgium", "T33TUN": "Austria",
                      "T35TMK": "Romania", "T37MCT": "Kenya", "T52SDE": "South Korea", "T12SUC": "USA",
                      "T60HUD": "New Zealand", "T21HUB": "Argentina"}
-        offsets = (- 0.1, 0, 0, 0.01, -0.09, 0, 0, 0, 0, 0)
-        labels, aucs, f_scores, scores = [], [], [], None
-        for idx, file in enumerate(unique_files):
-            print(file)
-            tile = file.split("_")[-5]
+        labels, aucs, f1_scores, accuracies, scores = [], [], [], [], None
+        max_recalls, max_precisions = [], []
+        for idx, file, ax in zip(range(len(unique_files)), unique_files, axes.flatten()):
+            tile = file.split("_")[-3]
             labels.append(tile + " (%s)" % countries[tile])
             boxes_validation_subset = boxes_validation[boxes_validation["detection_file"] == file]
             scores = np.float32(boxes_validation_subset["score_threshold"])
             precision = np.float32(boxes_validation_subset["precision"])
             recall = np.float32(boxes_validation_subset["recall"])
+            accuracies.append(np.float32(boxes_validation_subset["accuracy"]))
             f_score = 2 * ((precision * recall) / (precision + recall))
             f_score[np.isnan(f_score)] = 0
-            p = plt.plot(recall, precision)
-            f_scores.append(f_score)
-  #      plt.text(0.74, 0.03,
-   #              "Mean AUC=%s\nMax AUC=%s\nMin AUC=%s" % (np.round(np.mean(aucs), 3), np.max(aucs), np.min(aucs)),
-    #             fontsize=10)
-        plt.ylim(0, 1.1)
-        plt.xlim(0, 1)
-        plt.ylabel("Precision")
-        plt.xlabel("Recall")
-        plt.subplots_adjust(right=0.7)
-        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5))
+            ax.plot(recall, precision, color=c, linewidth=3)
+            f1_scores.append(f_score)
+            ax.set_title(tile + " (%s)" % countries[tile])
+            ax.set_ylim(0, 1.05)
+            ax.set_xlim(0, 1)
+            ax.set_ylabel("Precision")
+            ax.set_xlabel("Recall")
+            max_recalls.append(np.max(recall))
+            max_precisions.append(np.max(precision))
+        plt.tight_layout()
         plt.savefig(os.path.join(dir_validation_plots, "recall_precision_box_validation_lineplot.png"), dpi=600)
         plt.close()
-        # plot f-score
-        fig, ax = plt.subplots(figsize=(9, 5))
-        for idx in range(len(f_scores)):
-            ax.plot(scores, f_scores[idx])
-        p = plt.plot(scores, np.nanmean(np.float32(f_scores), 0), linewidth=2.5, linestyle="--", color="black")
-        plt.ylim(0, 1)
-        plt.xlim(0, np.max(scores))
-        plt.ylabel("F-score")
-        plt.xlabel("Detection score")
-        plt.subplots_adjust(right=0.7)
-        labels.append("Mean")
-        plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5))
-        plt.savefig(os.path.join(dir_validation_plots, "fscore_vs_score_validation_lineplot.png"), dpi=600)
+        # plot f-score and accuracy
+        f1_scores_np = np.float32(f1_scores)
+        max_f1_scores = np.max(f1_scores_np, 1)
+        mean_f_score = np.mean(max_f1_scores)
+        accuracies_np = np.float32(accuracies)
+        max_accuracies = np.max(accuracies, 1)
+        for ylabel, values, max_scores in zip(["Accuracy", "F1-score"], [accuracies, f1_scores],
+                                             [max_accuracies, max_f1_scores]):
+            fig, axes = plt.subplots(2, int(len(unique_files) * 0.5), figsize=(10, 4))
+            for idx, ax, these_values, max_score, label in zip(range(len(values)), axes.flatten(), values, max_scores,
+                                                               labels):
+                ax.plot(scores, values[idx], color=c, linewidth=3)
+                ax.set_title(label)
+                ax.set_ylim(0, 1)
+                ax.set_xlim(0, np.max(scores))
+                ax.set_ylabel(ylabel)
+                ax.set_xlabel("Detection score")
+                z = 0.01 if ax == axes.flatten()[6] else 0.03
+                ax.text(scores[np.where(these_values == max_score)[0][0]] + 0.05, max_score + z, np.round(max_score, 2))
+            plt.tight_layout()
+            plt.savefig(os.path.join(dir_validation_plots, "%s_vs_score_validation_lineplot.png" % ylabel), dpi=600)
+            plt.close()
+        #  p = plt.plot(scores, np.nanmean(np.float32(f_scores), 0), linewidth=2.5, linestyle="--", color="black")
+        #plt.ylim(0, 1)
+        #plt.xlim(0, np.max(scores))
+        #plt.ylabel("F-score")
+        #plt.xlabel("Detection score")
+        #plt.subplots_adjust(right=0.7)
+        #labels.append("Mean")
+        #plt.legend(labels, loc="center right", bbox_to_anchor=(1.47, 0.5))
+    
+    @staticmethod
+    def plot_bast_summary():
+        s2_dir1, s2_dir2 = "s2_direction1", "s2_direction2"
+        files = list(set(glob(os.path.join(dir_validation, "*.csv"))) - set(glob(os.path.join(dir_validation,
+                                                                                              "*validation.csv"))))
+        s2_values, bast_values = [], []
+        for file in files:
+            validation_pd = pd.read_csv(file)
+            start_date = validation_pd.date.iloc[0]
+            start_idx = np.where(validation_pd.date == start_date)[0][-1]
+            validation_pd = validation_pd[start_idx:]
+            s2_values.append(np.float32(validation_pd[s2_dir1] + validation_pd[s2_dir2]))
+            bast_values.append(np.float32(validation_pd[NAME_TR1] + validation_pd[NAME_TR2]))
+        s2_values_flat, bast_values_flat = np.hstack(s2_values), np.hstack(bast_values)
+        regress = linregress(s2_values_flat, bast_values_flat)
+        fig, ax = plt.subplots(figsize=(6, 2.5))
+        ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR)
+        ax.set_ylim(-10, 200)
+        ax.set_xlim(-10, 200)
+        ax.set_ylabel("Traffic count station")
+        ax.set_xlabel("Sentinel-2")
+        rmse = np.sqrt(np.square(np.subtract(bast_values_flat, s2_values_flat)).mean())
+        m, b = np.polyfit(s2_values_flat, bast_values_flat, 1)
+        formula = "y = %sx + %s" % (np.round(m, 2), np.round(b, 2))
+        ax.plot(s2_values_flat, m * s2_values_flat + b, color="#e5df1b", alpha=0.8)
+        summary = "n=%s\nLin. regression\npearson r-value: %s\nslope: %s\nFormula: %s\np-value: %s\n\nRMSE: %s" % (
+            len(s2_values_flat), np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula, np.round(regress.pvalue, 2), rmse)
+        plt.text(210, 40, summary, fontsize=11)
+        plt.text(-100, 40, " ")
+        plt.tight_layout()
+        plt.savefig(os.path.join(dir_validation_plots, "bast_overall_scatterplot.png"), dpi=500)
+        plt.close()
+        rmse = np.sqrt(np.square(np.subtract(bast_values_flat, s2_values_flat)).mean())
+        # by weekday
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        n_weekday = np.zeros(7)
+        r_values = np.zeros_like(n_weekday)
+        mean_by_weekday = {"s2": [], "bast": [], "bast_car": []}
+        for weekday in np.arange(7):
+            s2_values, bast_values, bast_car_values = [], [], []
+            for file in files:
+                validation_pd = pd.read_csv(file)
+                start_date = validation_pd.date.iloc[0]
+                start_idx = np.where(validation_pd.date == start_date)[0][-1]
+                validation_pd = validation_pd[start_idx:]
+                for idx, acquistion_date in enumerate(validation_pd.date):
+                    d = date.fromisoformat(acquistion_date)
+                    if d.weekday() == weekday:
+                        row = validation_pd.iloc[idx]
+                        s2_values.append(np.float32(row[s2_dir1] + row[s2_dir2]))
+                        bast_values.append(np.float32(row[NAME_TR1] + row[NAME_TR2]))
+                        bast_car_values.append(np.float32(row["KFZ_R1"] + row["KFZ_R2"]))
+            n_weekday[weekday] = len(s2_values)
+            s2_values_flat, bast_values_flat = np.hstack(s2_values), np.hstack(bast_values)
+            bast_car_values_flat = np.hstack(bast_car_values)
+            mean_by_weekday["s2"].append(np.mean(s2_values_flat))
+            mean_by_weekday["bast"].append(np.mean(bast_values_flat))
+            mean_by_weekday["bast_car"].append(np.mean(bast_car_values_flat))
+         #   ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR, s=0.01)
+            regress = linregress(s2_values_flat, bast_values_flat)
+            r_values[weekday] = regress.rvalue
+          #  ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR)
+         #   m, b = np.polyfit(s2_values_flat, bast_values_flat, 1)
+          #  formula = "y = %sx + %s" % (np.round(m, 2), np.round(b, 2))
+          #  ax.plot(s2_values_flat, m * s2_values_flat + b, color=S2_COLOR, alpha=0.8)
+          #  plt.text(-5, 220, "Lin. regression\npearson r-value: %s\nslope: %s\n%s" %
+           #          (np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula), fontsize=11)
+        s2, bast = np.float32(mean_by_weekday["s2"]), np.float32(mean_by_weekday["bast"])
+        fig, ax = plt.subplots(figsize=(6, 3))
+        #ax = axes[0]
+        ax.plot(weekdays, s2, color=S2_COLOR, linewidth=2.5)
+        bast_std = str(np.round(np.std(bast), 2))
+        s2_std = str(np.round(np.std(s2), 2))
+       # stat_str = "BAST\nstandard deviation: %s" % bast_std
+      #  ax.text(4.95, bast[5] + 5, stat_str)
+        ax.plot(weekdays, bast, color=BAST_COLOR, linewidth=2.5)
+        ax.legend(["Sentinel-2", "BAST Lzg"], loc="upper right")
+     #   stat_str = stat_str.replace("BAST", "Sentinel-2").replace(bast_std, s2_std)
+     #   stat_str = stat_str + "\nMean share of BAST: %s %s" % (np.round(np.mean(np.float32(s2 / bast) * 100), 2), "%")
+     #   ax.text(3, s2[3] - 15, stat_str)
+        #ax = axes[0]
+        regress = linregress(s2, bast)
+    #    ax.scatter(s2, bast, color="black")
+     #   ax.set_xlabel("Sentinel-2")
+      #  ax.set_ylabel("BAST Lzg")
+        ax.text(0, 3, "pearson r-value: %s" % (np.round(regress.rvalue, 2)), fontsize=11)
+        plt.tight_layout()
+        plt.savefig(os.path.join(dir_validation_plots, "mean_values_by_weekday_lineplot_scatterplot.png"), dpi=500)
         plt.close()
 
 
@@ -622,6 +744,7 @@ if __name__ == "__main__":
     else:
         try:
             os.remove(boxes_validation_file)
+            print("")
         except FileNotFoundError:
             pass
     for station, acquisition_period in stations.items():
@@ -632,10 +755,8 @@ if __name__ == "__main__":
         if validate == "boxes":
             validator.validate_boxes()
             validator.plot_box_validation_recall_precision(boxes_validation_file)
+            break  # messy..
         else:
             print("%s\nStation: %s" % ("-" * 50, station))
-            validator.validate_acquisition_wise(acquisition_period)
-
-
-
-
+          #  validator.validate_acquisition_wise(acquisition_period)
+            validator.plot_bast_summary()
