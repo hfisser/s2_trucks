@@ -19,6 +19,8 @@ from array_utils.geocoding import lat_from_meta, lon_from_meta
 from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
 
+S21, S22 = "s2_direction1", "s2_direction2"
+
 rcParams["font.serif"] = "Times New Roman"
 rcParams["font.family"] = "serif"
 
@@ -249,6 +251,9 @@ class Validator:
             station_buffer = station_point.buffer(buffer_distance)
         station_buffer_gpd = gpd.GeoDataFrame({"id": [0]}, geometry=[station_buffer],
                                               crs="EPSG:326" + str(self.station_meta["utm_zone"]))
+        station_buffer_gpd.to_file(os.path.join(
+            dir_validation, "buffer_aoi_%s" % os.path.basename(detections_file).split("_")[-1]), driver="GPKG")
+        return
         try:
             detections_in_buffer = gpd.overlay(self.detections.to_crs(station_buffer_gpd.crs),
                                                station_buffer_gpd, "intersection")
@@ -566,7 +571,7 @@ class Validator:
             ax.scatter(x=s2, y=bast, color=c)
             regress = linregress(x=s2, y=bast)
             m, b = np.polyfit(s2, bast, 1)
-            ax.plot(s2, m * s2 + b, color="#e5df1b", alpha=0.8)
+            ax.plot(s2, m * s2 + b, color="black")
             plt.text(np.nanquantile(s2, [0.99])[0] + 15, np.nanquantile(bast, [0.85])[0],
                      "Lin. regression\npearson r-value=%s\nslope=%s" % (np.round(regress.rvalue, 2),
                                                                  np.round(regress.slope, 2)), fontsize=11)
@@ -646,29 +651,29 @@ class Validator:
     
     @staticmethod
     def plot_bast_summary():
-        s2_dir1, s2_dir2 = "s2_direction1", "s2_direction2"
         files = list(set(glob(os.path.join(dir_validation, "*.csv"))) - set(glob(os.path.join(dir_validation,
                                                                                               "*validation.csv"))))
-        s2_values, bast_values = [], []
+        s2_values, bast_truck, bast_car = [], [], []
         for file in files:
             validation_pd = pd.read_csv(file)
             start_date = validation_pd.date.iloc[0]
             start_idx = np.where(validation_pd.date == start_date)[0][-1]
             validation_pd = validation_pd[start_idx:]
-            s2_values.append(np.float32(validation_pd[s2_dir1] + validation_pd[s2_dir2]))
-            bast_values.append(np.float32(validation_pd[NAME_TR1] + validation_pd[NAME_TR2]))
-        s2_values_flat, bast_values_flat = np.hstack(s2_values), np.hstack(bast_values)
-        regress = linregress(s2_values_flat, bast_values_flat)
+            s2_values.append(np.float32(validation_pd[S21] + validation_pd[S22]))
+            bast_truck.append(np.float32(validation_pd[NAME_TR1] + validation_pd[NAME_TR2]))
+            bast_car.append(np.float32(validation_pd["KFZ_R1"] + validation_pd["KFZ_R2"]))
+        s2_values_flat, bast_truck_flat, bast_car_flat = np.hstack(s2_values), np.hstack(bast_truck), np.hstack(bast_car)
+        regress = linregress(s2_values_flat, bast_truck_flat)
         fig, ax = plt.subplots(figsize=(6, 2.5))
-        ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR)
+        ax.scatter(s2_values_flat, bast_truck_flat, s=1, color=S2_COLOR)
         ax.set_ylim(-10, 200)
         ax.set_xlim(-10, 200)
-        ax.set_ylabel("Traffic count station")
-        ax.set_xlabel("Sentinel-2")
-        rmse = np.sqrt(np.square(np.subtract(bast_values_flat, s2_values_flat)).mean())
-        m, b = np.polyfit(s2_values_flat, bast_values_flat, 1)
+        ax.set_ylabel('Traffic count station trucks ("Lzg")')
+        ax.set_xlabel("Sentinel-2 trucks")
+        rmse = np.sqrt(np.square(np.subtract(bast_truck_flat, s2_values_flat)).mean())
+        m, b = np.polyfit(s2_values_flat, bast_truck_flat, 1)
         formula = "y = %sx + %s" % (np.round(m, 2), np.round(b, 2))
-        ax.plot(s2_values_flat, m * s2_values_flat + b, color="#e5df1b", alpha=0.8)
+        ax.plot(s2_values_flat, m * s2_values_flat + b, color="black")
         summary = "n=%s\nLin. regression\npearson r-value: %s\nslope: %s\nFormula: %s\np-value: %s\n\nRMSE: %s" % (
             len(s2_values_flat), np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula, np.round(regress.pvalue, 2), rmse)
         plt.text(210, 40, summary, fontsize=11)
@@ -676,14 +681,32 @@ class Validator:
         plt.tight_layout()
         plt.savefig(os.path.join(dir_validation_plots, "bast_overall_scatterplot.png"), dpi=500)
         plt.close()
-        rmse = np.sqrt(np.square(np.subtract(bast_values_flat, s2_values_flat)).mean())
+        # plot car comparison
+        regress = linregress(s2_values_flat, bast_car_flat)
+        fig, ax = plt.subplots(figsize=(6, 2.75))
+        ax.scatter(s2_values_flat, bast_car_flat, s=1, color=S2_COLOR)
+        ax.set_ylim(-10, 1250)
+        ax.set_xlim(-10, 1250)
+        ax.set_ylabel('Traffic count station cars ("KFZ")')
+        ax.set_xlabel("Sentinel-2 trucks")
+        m, b = np.polyfit(s2_values_flat, bast_car_flat, 1)
+        ax.plot(s2_values_flat, m * s2_values_flat + b, color="black")
+        summary = "n=%s\nLin. regression\npearson r-value: %s\nslope: %s\nintercept: %s\np-value: %s" % \
+                  (len(s2_values_flat), np.round(regress.rvalue, 2), np.round(regress.slope, 2), np.round(b, 2),
+                   np.round(regress.pvalue, 2))
+        plt.text(np.max(bast_car_flat) + 50, 350, summary, fontsize=11)
+        plt.text(-600, 40, " ")
+        plt.tight_layout()
+        plt.savefig(os.path.join(dir_validation_plots, "bast_cars_scatterplot.png"), dpi=500)
+        plt.close()
+        rmse = np.sqrt(np.square(np.subtract(bast_truck_flat, s2_values_flat)).mean())
         # by weekday
         weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         n_weekday = np.zeros(7)
         r_values = np.zeros_like(n_weekday)
         mean_by_weekday = {"s2": [], "bast": [], "bast_car": []}
         for weekday in np.arange(7):
-            s2_values, bast_values, bast_car_values = [], [], []
+            s2_values, bast_truck, bast_car_values = [], [], []
             for file in files:
                 validation_pd = pd.read_csv(file)
                 start_date = validation_pd.date.iloc[0]
@@ -693,46 +716,164 @@ class Validator:
                     d = date.fromisoformat(acquistion_date)
                     if d.weekday() == weekday:
                         row = validation_pd.iloc[idx]
-                        s2_values.append(np.float32(row[s2_dir1] + row[s2_dir2]))
-                        bast_values.append(np.float32(row[NAME_TR1] + row[NAME_TR2]))
+                        s2_values.append(np.float32(row[S21] + row[S22]))
+                        bast_truck.append(np.float32(row[NAME_TR1] + row[NAME_TR2]))
                         bast_car_values.append(np.float32(row["KFZ_R1"] + row["KFZ_R2"]))
             n_weekday[weekday] = len(s2_values)
-            s2_values_flat, bast_values_flat = np.hstack(s2_values), np.hstack(bast_values)
+            s2_values_flat, bast_truck_flat = np.hstack(s2_values), np.hstack(bast_truck)
             bast_car_values_flat = np.hstack(bast_car_values)
             mean_by_weekday["s2"].append(np.mean(s2_values_flat))
-            mean_by_weekday["bast"].append(np.mean(bast_values_flat))
+            mean_by_weekday["bast"].append(np.mean(bast_truck_flat))
             mean_by_weekday["bast_car"].append(np.mean(bast_car_values_flat))
-         #   ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR, s=0.01)
-            regress = linregress(s2_values_flat, bast_values_flat)
+            regress = linregress(s2_values_flat, bast_truck_flat)
             r_values[weekday] = regress.rvalue
-          #  ax.scatter(s2_values_flat, bast_values_flat, color=S2_COLOR)
-         #   m, b = np.polyfit(s2_values_flat, bast_values_flat, 1)
-          #  formula = "y = %sx + %s" % (np.round(m, 2), np.round(b, 2))
-          #  ax.plot(s2_values_flat, m * s2_values_flat + b, color=S2_COLOR, alpha=0.8)
-          #  plt.text(-5, 220, "Lin. regression\npearson r-value: %s\nslope: %s\n%s" %
-           #          (np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula), fontsize=11)
-        s2, bast = np.float32(mean_by_weekday["s2"]), np.float32(mean_by_weekday["bast"])
+        s2, bast_truck = np.float32(mean_by_weekday["s2"]), np.float32(mean_by_weekday["bast"])
         fig, ax = plt.subplots(figsize=(6, 3))
-        #ax = axes[0]
         ax.plot(weekdays, s2, color=S2_COLOR, linewidth=2.5)
-        bast_std = str(np.round(np.std(bast), 2))
+        bast_std = str(np.round(np.std(bast_truck), 2))
         s2_std = str(np.round(np.std(s2), 2))
-       # stat_str = "BAST\nstandard deviation: %s" % bast_std
-      #  ax.text(4.95, bast[5] + 5, stat_str)
-        ax.plot(weekdays, bast, color=BAST_COLOR, linewidth=2.5)
+        ax.plot(weekdays, bast_truck, color=BAST_COLOR, linewidth=2.5)
         ax.legend(["Sentinel-2", "BAST Lzg"], loc="upper right")
-     #   stat_str = stat_str.replace("BAST", "Sentinel-2").replace(bast_std, s2_std)
-     #   stat_str = stat_str + "\nMean share of BAST: %s %s" % (np.round(np.mean(np.float32(s2 / bast) * 100), 2), "%")
-     #   ax.text(3, s2[3] - 15, stat_str)
-        #ax = axes[0]
-        regress = linregress(s2, bast)
-    #    ax.scatter(s2, bast, color="black")
-     #   ax.set_xlabel("Sentinel-2")
-      #  ax.set_ylabel("BAST Lzg")
+        regress = linregress(s2, bast_truck)
         ax.text(0, 3, "pearson r-value: %s" % (np.round(regress.rvalue, 2)), fontsize=11)
         plt.tight_layout()
         plt.savefig(os.path.join(dir_validation_plots, "mean_values_by_weekday_lineplot_scatterplot.png"), dpi=500)
         plt.close()
+        # with cars
+        bast_car = mean_by_weekday["bast_car"]
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.plot(weekdays, s2, color=S2_COLOR, linewidth=2.5)
+        bast_std = str(np.round(np.std(bast_car), 2))
+        s2_std = str(np.round(np.std(s2), 2))
+        ax.plot(weekdays, bast_car, color=BAST_COLOR, linewidth=2.5)
+        regress = linregress(s2, bast_car)
+        ax.text(0, 550, "pearson r-value: %s" % (np.round(regress.rvalue, 2)), fontsize=11)
+        ax.set_ylim(0, 600)
+        ax.legend(["Sentinel-2", "BAST KFZ"], loc="upper right")
+        fig.tight_layout()
+        fig.savefig(os.path.join(dir_validation_plots, "mean_values_by_weekday_cars_lineplot_scatterplot.png"), dpi=500)
+        plt.close(fig)
+
+    @staticmethod
+    def plot_at_selected_stations():
+        selected_stations = ["Reken", "Braunschweig-Flughafen", "Lathen", "Reussenberg", "Schwandorf-Mitte",
+                             "Odelzhausen", "Strasburg", "Lenting", "Röstebachtalbrücke", "Herzhausen", "Sprakensehl", "Crailsheim-Süd"]
+        months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        positions = np.array([48, 180, 27.5, 132, 77, 121, 19, 126, 66, 12, 20, 6.75]) * 0.62
+        fig, axes = plt.subplots(6, 4, gridspec_kw={"width_ratios": [2, 1, 2, 1]}, figsize=(12, 13))
+        fig1, axes1 = plt.subplots(2, 3, figsize=(12, 6))
+        fig2, axes2 = plt.subplots(2, 3, figsize=(12, 6))
+        axes1, axes2 = axes1.flatten(), axes2.flatten()
+        file_idx, axes1_idx = -1, -1
+        lkw_all, lzg_all, sat_all, s2_all = [], [], [], []
+        for file in glob(os.path.join(dir_validation, "validation_run*.csv")):
+            v = pd.read_csv(file)
+            unique_dates = np.unique(v["date"])
+            start_idx = np.where(v["date"] == unique_dates[0])[0][-1]
+            v = v[start_idx:]
+            lkw_all.append(np.float32(v["Lkw_R1"] + v["Lkw_R2"]))
+            lzg_all.append(np.float32(v[NAME_TR1] + v[NAME_TR2]))
+            sat_all.append(np.float32(v["Sat_R1"] + v["Sat_R2"]))
+            s2_all.append(np.float32(v[S21] + v[S22]))
+        for y in range(axes.shape[0]):
+            for x in range(axes.shape[1]):
+                if (x % 2) == 0:
+                    file_idx += 1
+                    ax_line = axes[y, x]
+                    ax_scatter = axes[y, x + 1]
+                    s, pos = selected_stations[file_idx], positions[file_idx]
+                    file = glob(os.path.join(dir_validation, "*%s*.csv" % s))[0]
+                    v = pd.read_csv(file)
+                    unique_dates = np.unique(v["date"])
+                    start_idx = np.where(v["date"] == unique_dates[0])[0][-1]
+                    v = v[start_idx:]
+                    s2_sum, station_sum = np.float32(v[S21] + v[S22]), np.float32(v[NAME_TR1] + v[NAME_TR2])
+                    rmse = np.sqrt(np.square(np.subtract(station_sum, s2_sum)).mean())
+                    #print("RMSE %s: %s" % (s, s2_sum / station_sum))
+                    d = station_sum - s2_sum
+                    regression = linregress(s2_sum, station_sum)
+                    ax_line.plot(unique_dates, s2_sum, color=S2_COLOR, linewidth=2)
+                    ax_line.plot(unique_dates, station_sum, color=BAST_COLOR, linewidth=2)
+                    ax_line.set_title(s)
+                    formatted_dates = []
+                    for d in unique_dates:
+                        split = d.split("2018-")[-1].split("-")
+                        m = months[int(split[0]) - 1]
+                        formatted_dates.append("%s-%s" % (m, split[1]))
+                    ax_line.set_xticklabels(formatted_dates, rotation=90)
+                    ax_line.set_ylabel("Truck count")
+                    ax_scatter.scatter(s2_sum, station_sum, s=9, color=S2_COLOR)
+                    m, b = np.polyfit(s2_sum, station_sum, 1)
+                    ax_scatter.plot(s2_sum, m * s2_sum + b, color="black")
+                    offset = np.max(np.hstack([s2_sum, station_sum])) * 1.1
+                    ax_scatter.set_ylim(-int(-offset / 1.1) * 0.2, offset)
+                    ax_scatter.set_xlim(-int(-offset / 1.1) * 0.2, offset)
+                    ax_scatter.set_title("r-value: %s" % np.round(regression.rvalue, 2))
+                    off = 6.75 if "Crailsheim" in s else int(offset / 1.1) * 0.25
+                    ax_scatter.text(pos, off,
+                             "slope: %s\nintercept: %s" % (np.round(regression.slope, 1), np.round(b, 1)), fontsize=11)
+                    ax_scatter.set_ylabel("Station")
+                    ax_scatter.set_xlabel("Sentinel-2")
+                    if any([target in file for target in ["Reken", "Braunschweig-Flughafen", "Odelzhausen", "Lenting",
+                                                          "Herzhausen", "Crailsheim"]]):
+                        # cars
+                        car_sum = np.float32(v["KFZ_R1"] + v["KFZ_R2"])
+                        axes1_idx += 1
+                        ax = axes1[axes1_idx]
+                        ax.plot(unique_dates, station_sum, color=BAST_COLOR)
+                        ax.plot(unique_dates, car_sum, color="#185a61")
+                        ax.plot(unique_dates, s2_sum, color=S2_COLOR)
+                        ax.set_xticklabels(formatted_dates, rotation=90)
+                        ax.set_title(s)
+                        ax.set_ylabel("Count")
+                        print("%s: %s" % (s, np.round(linregress(s2_sum, car_sum).rvalue, 2)))
+                        # line different truck types
+                        ax = axes2[axes1_idx]
+                        lkw_sum = np.float32(v["Lkw_R1"] + v["Lkw_R2"])
+                        lzg_sum = np.float32(v[NAME_TR1] + v[NAME_TR2])
+                        sat_sum = np.float32(v["Sat_R1"] + v["Sat_R2"])
+                        colors = ["#c99638", BAST_COLOR, "#b3c938"]
+                        for color, values in zip(np.hstack([colors, S2_COLOR]), [lkw_sum, lzg_sum, sat_sum, s2_sum]):
+                            ax.plot(unique_dates, values, color=color)
+                        ax.set_title(s)
+                        ax.set_ylabel("Count")
+                        ax.set_xticklabels(formatted_dates, rotation=90)
+                        # scatter different truck types
+        fig3, axes3 = plt.subplots(1, 3, figsize=(10, 3))
+        s2_all = np.hstack(s2_all)
+        for ax, title, values, c in zip(axes3.flatten(), ["Lkw", "Lzg", "Sat"],
+                                       [np.hstack(lkw_all), np.hstack(lzg_all), np.hstack(sat_all)], colors):
+            ax.scatter(s2_all, values, s=3, color=c)
+            ax.set_title(title)
+            limit = np.max(np.hstack([s2_all, values])) * 1.1
+            ax.set_ylim(0, limit)
+            ax.set_xlim(0, limit)
+            regress = linregress(x=s2_all, y=values)
+            m, b = np.polyfit(s2_all, values, 1)
+            ax.plot(s2_all, m * s2_all + b, color="black")
+            ax.text(limit * 0.45, limit * 0.05,
+                     "Lin. regression\npearson r-value: %s\nslope: %s\nintercept: %s" %
+                     (np.round(regress.rvalue, 2), np.round(regress.slope, 2), np.round(b, 2)),
+                     fontsize=11)
+            ax.set_ylabel("Station")
+            ax.set_xlabel("Sentinel-2")
+        fig3.tight_layout()
+        fig3.savefig(os.path.join(dir_validation_plots, "bast_truck_types_scatter.png"), dpi=600)
+        plt.close(fig3)
+        axes1[4].legend(["Station trucks", "Station cars", "Sentinel-2 trucks"], bbox_to_anchor=(0.75, -0.4))
+        fig.tight_layout()
+        fig.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_lineplots_scatterplots.png"), dpi=600)
+        plt.close(fig)
+        fig1.tight_layout()
+        fig1.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_car_lineplots.png"),
+                     dpi=600)
+        plt.close(fig1)
+        axes2[4].legend(['Station "Lkw"', 'Station "Lzg"', 'Station "Sat"', "Sentinel-2 trucks"],
+                        bbox_to_anchor=(0.75, -0.4))
+        fig2.tight_layout()
+        fig2.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_truck_types_lineplots.png"),
+                     dpi=600)
+        plt.close(fig2)
 
 
 if __name__ == "__main__":
@@ -743,7 +884,7 @@ if __name__ == "__main__":
             pass
     else:
         try:
-            os.remove(boxes_validation_file)
+           # os.remove(boxes_validation_file)
             print("")
         except FileNotFoundError:
             pass
@@ -760,3 +901,5 @@ if __name__ == "__main__":
             print("%s\nStation: %s" % ("-" * 50, station))
           #  validator.validate_acquisition_wise(acquisition_period)
             validator.plot_bast_summary()
+            validator.plot_at_selected_stations()
+            break
