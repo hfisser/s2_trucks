@@ -43,23 +43,27 @@ for directory in [dir_comparison_detections, dir_comparison_detections_boxes, di
 
 aoi_file = os.path.join(dir_comparison, "aoi_h_bs.geojson")
 uba_stations_locations_file = os.path.join(dir_comparison_insitu, "station_locations.csv")
-uba_dates = "20180410,20180420,20180507,20180520,20180522,20180606,20180611,20180724,20180726,20180803,20180823," \
+uba_dates_braunschweig = "20180410,20180420,20180507,20180520,20180522,20180606,20180611,20180724,20180726,20180803,20180823," \
             "20180919,20181012,20181014".split(",")
 comparison_variables = ["var_VCDtropo", "var_mod_NO2_AK_coulumn"]
+comparison_variables = ["var_VCDtropo"]
 lon_crop = 10.6695
-uba_station_buffer = 2500  # meters
+uba_station_buffer = 5000  # meters
 
 
 class Comparison:
-    def __init__(self, bast_station, aoi_file_path):
+    def __init__(self, uba_station, bast_station, aoi_file_path):
+        self.uba_station = uba_station
         self.bast_station = bast_station
         self.bbox = gpd.read_file(aoi_file_path).to_crs("EPSG:4326").geometry.bounds
 
     def run_comparison(self):
-        s2_files = glob(os.path.join(dir_validation_data, "*%s*.tiff" % self.bast_station))  # assume data is yet there
-        detection_files, uba_no2_arrays = [], []
-        for date in [f.split("_")[-2] for f in s2_files]:
-            print(date)
+        detection_files = glob(os.path.join(dir_validation_detections, "*%s.gpkg" %
+                                            self.bast_station.split(" (")[0].replace(" ", "_")))
+        dates = [os.path.basename(f).split("_")[2] for f in detection_files]
+        uba_no2_arrays = []
+        """
+        for date, detection_file in zip(dates, detection_files):
             sh = SentinelHub()
             sh.set_credentials(SH_CREDENTIALS_FILE)
             sh_bbox = tuple(list(self.bbox.iloc[0]))  # xmin, ymin, xmax, ymax
@@ -70,12 +74,11 @@ class Comparison:
             station_clean = self.bast_station.split(" (")[0]
             merged_file = os.path.join(
                 dir_validation_data, "s2_bands_%s_%s_%s_merged.tiff" % (station_clean, date_clean, date_clean))
-            detections_file = os.path.join(dir_validation_detections,
-                                           "s2_detections_%s_%s.gpkg" % (date_clean, station_clean))
             try:
-                gpd.read_file(detections_file)
-                detection_files.append(detections_file)
+                gpd.read_file(detection_file)
             except DriverError:
+                print("File does not exist: %s" % detection_file)
+                continue
                 if not os.path.exists(merged_file):
                     band_stack, folder = sh.get_data(sh_bbox, [date, date], DataCollection.SENTINEL2_L2A,
                                                      ["B04", "B03", "B02", "B08", "CLM"], resolution,
@@ -89,11 +92,12 @@ class Comparison:
                 prediction_array = rf_td.predict()
                 prediction_boxes = rf_td.extract_objects(prediction_array)
                 rf_td.prediction_boxes_to_gpkg(prediction_boxes, detections_file)
-            finally:
-                uba_no2_arrays = self.compare_insitu_no2(glob(os.path.join(dir_validation_detections,
-                                                                           "*%s*.gpkg" % station_clean)))
-        for comparison_variable in comparison_variables:
-            self.s2_vs_s5p_model_no2(comparison_variable, detection_files, uba_no2_arrays)
+            #finally:
+        """
+        uba_no2_arrays = self.compare_insitu_no2(detection_files)
+   #     for comparison_variable in comparison_variables:
+    #        self.s2_vs_s5p_model_no2(comparison_variable, detection_files, dates, uba_no2_arrays[0, :])
+        return uba_no2_arrays, dates
 
     def plot_s2_series(self):
         weekdays = {"2018-05-22": "Tuesday", "2018-06-06": "Wednesday", "2018-06-11": "Monday",
@@ -122,11 +126,12 @@ class Comparison:
         plt.close()
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
-    def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, uba_no2_arrays):
-        wind_bins_low = np.int16([135, 135])
-        wind_bins_up = np.int16([225, 180])
-        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
-        var0, var1 = comparison_variables[0], comparison_variables[1]
+    def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, dates, uba_no2_arrays):
+        wind_bins_low = np.int16([45, 135])
+        wind_bins_up = np.int16([90, 225])
+        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=",", index_col=0)
+      #  var0, var1 = comparison_variables[0], comparison_variables[1]
+        var0 = comparison_variables[0]
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
             station_point = Point([row.lon, row.lat])
@@ -134,17 +139,17 @@ class Comparison:
             observation_dict = {}
             for wind_low in wind_bins_low:
                 observation_dict[str(wind_low)] = {"comparison": [], "s2": []}
-            wind_arrays, s2_arrays, comparison_arrays, dates = [], [], {var0: [], var1: []}, []  # all timestamps
+            wind_arrays, s2_arrays, comparison_arrays, dates_used = [], [], {var0: []}, []  # all timestamps
             meta, x_station, y_station = None, None, None
-            for date, detections_file in zip(self.dates, detection_files):
-                date_compact = date[-4:] + date[3:5] + date[0:2]
+            for date, detections_file in zip(dates, detection_files):
+                date_compact = date[0:4] + date[5:7] + date[-2:]
                 try:
-                    comparison_raster_file = glob(os.path.join(
-                        dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[0]
+                    comparison_raster_file = glob(
+                        os.path.join(dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[1]
                 except IndexError:
                     continue
                 else:
-                    dates.append(date)
+                    dates_used.append(date)
                 print("Reading: %s" % comparison_raster_file)
                 reference_array = xr.open_dataset(comparison_raster_file)
                 lon, lat = reference_array.lon.values, reference_array.lat.values
@@ -173,7 +178,7 @@ class Comparison:
                 s2_arrays.append(s2_trucks_array.copy())
                 wind_arrays.append(wind_direction.copy())
                 comparison_arrays[var0].append(reference_array[var0].values.copy())
-                comparison_arrays[var1].append(reference_array[var1].values.copy())
+                #comparison_arrays[var1].append(reference_array[var1].values.copy())
                 comparison_array[s2_trucks_array < 1] = np.nan
                 s2_trucks_array[np.isnan(comparison_array)] = np.nan
                 shape = comparison_array.shape
@@ -192,71 +197,100 @@ class Comparison:
                             observation_dict[str(wind_low)]["comparison"].append(values[0])
                             observation_dict[str(wind_low)]["s2"].append(values[1])
             # plot values of all dates at this station by wind direction
-            for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
-                x = np.float32(observation_dict[str(wind_low)]["s2"])
-                y = np.float32(observation_dict[str(wind_low)]["comparison"])
-                self.scatter_plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
+    #        for wind_low, wind_up in zip(wind_bins_low, wind_bins_up):
+     #           x = np.float32(observation_dict[str(wind_low)]["s2"])
+      #          y = np.float32(observation_dict[str(wind_low)]["comparison"])
+       #         self.scatter_plot_by_wind(wind_low, wind_up, x, y, raster_variable_name, row.name)
             # spatial comparison
-            correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays,
-                                                  wind_bins_low, wind_bins_up, dates, raster_variable_name)
-            meta["count"], meta["dtype"] = correlations.shape[0], np.float32
-            correlations_file = os.path.join(dir_comparison_plots,
-                                             "spatial_correlations_%s.tiff" % raster_variable_name)
+       #     correlations = self.compare_spatially(wind_arrays, s2_arrays, comparison_arrays,
+        #                                          wind_bins_low, wind_bins_up, dates, raster_variable_name)
+         #   meta["count"], meta["dtype"] = correlations.shape[0], np.float32
+
+            correlation_rasters = self.compare_on_raster(np.float32(s2_arrays), np.float32(comparison_arrays[var0]),
+                                                         np.float32(wind_arrays), wind_bins_low, wind_bins_up)
+            meta["count"], meta["dtype"] = len(correlation_rasters), np.float32
+            with rio.open(os.path.join(dir_comparison_plots, "pearson_correlation_%s_%s_%s_%s.tif"
+                                                             % (wind_bins_low[0], wind_bins_up[0],
+                                                                wind_bins_low[1], wind_bins_up[1])), "w", **meta) as tgt:
+                for i, arr in enumerate(correlation_rasters):
+                    tgt.write(arr.astype(np.float32), i + 1)
+
+
       #      with rio.open(correlations_file, "w", **meta) as tgt:
        #         for idx in range(meta["count"]):
         #            tgt.write(correlations[idx].astype(np.float32), idx + 1)
-            comparison_values_list = list(comparison_arrays.values())
-            ymin, ymax = int(np.clip(y_station - 1, 0, np.inf)), int(np.clip(y_station + 2, 0, np.inf))
-            xmin, xmax = int(np.clip(x_station - 1, 0, np.inf)), int(np.clip(x_station + 2, 0, np.inf))
-            comparison_at_station = np.zeros((2, np.float32(comparison_arrays[var0]).shape[0]))
-            for i in range(comparison_at_station.shape[1]):
-                comparison_at_station[0, i] = np.nanmean(np.float32(comparison_arrays[var0])[i, ymin:ymax, xmin:xmax])
-                comparison_at_station[1, i] = np.nanmean(np.float32(comparison_arrays[var1])[i, ymin:ymax, xmin:xmax])
-            uba_values = []
-            for date_idx, date in enumerate(self.dates):  # more dates in uba arrays than in other data, sort out
-                if date in dates:
-                    uba_values.append(uba_no2_arrays[row_idx, date_idx])
-            s2_arrays = np.float32(s2_arrays)
+   #         comparison_values_list = list(comparison_arrays.values())
+    #        ymin, ymax = int(np.clip(y_station - 1, 0, np.inf)), int(np.clip(y_station + 2, 0, np.inf))
+     #       xmin, xmax = int(np.clip(x_station - 1, 0, np.inf)), int(np.clip(x_station + 2, 0, np.inf))
+      #      comparison_at_station = np.zeros((2, np.float32(comparison_arrays[var0]).shape[0]))
+       #     for i in range(comparison_at_station.shape[1]):
+        #        comparison_at_station[0, i] = np.nanmean(np.float32(comparison_arrays[var0])[i, ymin:ymax, xmin:xmax])
+         #       comparison_at_station[1, i] = np.nanmean(np.float32(comparison_arrays[var1])[i, ymin:ymax, xmin:xmax])
+         #   uba_values = []
+          #  for date_idx, date in enumerate(dates):  # more dates in uba arrays than in other data, sort out
+           #     if date in dates:
+            #        uba_values.append(uba_no2_arrays[row_idx, date_idx])
+           # s2_arrays = np.float32(s2_arrays)
             # mean in window at station
-            s2_window_mean = [np.nanmean(s2_arrays[i, ymin:ymax, xmin:xmax]) for i in range(s2_arrays.shape[0])]
-            wind_mean = [np.nanmean(wind_arrays[i][ymin:ymax, xmin:xmax]) for i in range(len(wind_arrays))]
-            self.line_plot_summary(dates, np.float32(s2_window_mean),
-                                   comparison_at_station, np.float32(uba_values), np.float32(wind_mean), row.name)
+         #   s2_window_mean = [np.nanmean(s2_arrays[i, ymin:ymax, xmin:xmax]) for i in range(s2_arrays.shape[0])]
+          #  wind_mean = [np.nanmean(wind_arrays[i][ymin:ymax, xmin:xmax]) for i in range(len(wind_arrays))]
+          #  self.line_plot_summary(dates, np.float32(s2_window_mean),
+           #                        comparison_at_station, np.float32(uba_values), np.float32(wind_mean), row.name)
+
+
+    def compare_on_raster(self, s2_arr, comparison_arr, wind, wind_low, wind_up):
+        rvalue_arr = np.zeros((len(wind_low), s2_arr.shape[1], s2_arr.shape[2]))
+        for i, low, up in zip(range(len(wind_low)), wind_low, wind_up):
+            for y in range(rvalue_arr.shape[1]):
+                for x in range(rvalue_arr.shape[2]):
+                    ymax, xmax = np.clip(y + 2, 0, rvalue_arr.shape[1] - 1), np.clip(x + 2, 0, rvalue_arr.shape[2] - 1)
+                    ymin, xmin = int(np.clip(y - 1, 0, np.inf)), int(np.clip(x - 1, 0, np.inf))
+                    time = np.where((wind[:, y, x] >= low) * (wind[:, y, x] < up))[0]
+                    if len(time) < 5 or np.count_nonzero(s2_arr[time, y, x] > 5) == 0:
+                        rvalue = 0
+                    else:
+                        s2 = s2_arr[time, y, x]
+                        comp = comparison_arr[time, y, x]
+                        rvalue = np.round(linregress(s2, comp).rvalue, 2)
+                    rvalue_arr[i, y, x] = rvalue
+        return rvalue_arr
+
 
     def compare_insitu_no2(self, detection_files):
         crs = gpd.read_file(detection_files[0]).crs
-        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=";", index_col=0)
-        values = np.zeros((len(uba_station_locations_pd), 2, len(detection_files)))
+        uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=",", index_col=0)
+        uba_station_locations_pd = uba_station_locations_pd[uba_station_locations_pd["name"] == self.uba_station]
+        values = np.zeros((2, len(detection_files)))
         for row_idx in range(len(uba_station_locations_pd)):
             row = uba_station_locations_pd.iloc[row_idx]
-            station_name = row.name
+            station_name = row["name"]
             station_buffer = self.get_uba_station_buffer(row, uba_station_buffer, crs)
-            station_obs = self.read_uba_station_data(station_name)
-            dates = []
+            station_obs, station_dates = self.read_uba_station_data(station_name)
             for idx, detection_file in enumerate(detection_files):
                 detections = gpd.read_file(detection_file)
-                file_split = detection_file.split("_")[-2].split("-")
+                file_split = os.path.basename(detection_file).split("_")[2].split("-")
                 date = file_split[0] + file_split[1] + file_split[2]
-                dates.append(date)
                 try:
-                    date_idx = np.where(np.array(uba_dates) == date)[0][0]
+                    date_idx = np.where(np.array(station_dates) == date)[0][0]
                 except IndexError:
                     continue  # date for which no UBA data is given
-                no2_of_hour = station_obs[date_idx * 24 + 10]   # hour 10 of day of interest in flat variable
-                values[row_idx, 0, idx] = no2_of_hour
-                values[row_idx, 1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
-            y, x = values[row_idx][0], values[row_idx][1]
-            nan_mask = ~np.isnan(y) * ~np.isnan(x)
-            y = y[nan_mask]
-            x = x[nan_mask]
-            dates = np.array(dates)[nan_mask]
+                no2_of_hour = station_obs[date_idx + 10]   # hour 10 of day of interest in flat variable
+                values[0, idx] = no2_of_hour
+                values[1, idx] = len(gpd.clip(detections, station_buffer))  # detections in buffer proximity
+#            y, x = values[row_idx][0], values[row_idx][1]
+ #           nan_mask = ~np.isnan(y) * ~np.isnan(x)
+  #          y = y[nan_mask]
+   #         x = x[nan_mask]
+    #        dates = np.array(dates)[nan_mask]
+        return values
+        """
             # scatterplot
             regress = linregress(x, y)
             try:
                 m, b = np.polyfit(x, y, 1)
             except np.linalg.LinAlgError:  # only zeros (nans)
                 continue
-            fig, ax = plt.subplots(figsize=(7, 4))
+           # fig, ax = plt.subplots(figsize=(7, 4))
             ax.plot(x, m * x + b, color="#2b2b2b")
             ax.scatter(x, y, color="#c404ab")
             plt.xlabel("S2 trucks")
@@ -267,7 +301,7 @@ class Comparison:
                                                                              np.round(regress.slope, 2)),
                      fontsize=8)
             file_name = os.path.join(dir_comparison_plots, station_name + "_vs_sentinel2_trucks_scatter.png")
-            plt.savefig(file_name, dpi=400)
+            plt.savefig(file_name, dpi=500)
             plt.close()
             # lineplot
             fix, ax = plt.subplots(figsize=(7, 4))
@@ -281,9 +315,10 @@ class Comparison:
             ax.plot(dates_formatted[time_argsorted], y_normalized[time_argsorted], color="#8fb22a")
             plt.subplots_adjust(bottom=0.18, right=0.76)
             plt.xticks(rotation=45)
-            plt.savefig(os.path.join(dir_comparison_plots, file_name.replace("scatter", "line")), dpi=400)
+            plt.savefig(os.path.join(dir_comparison_plots, file_name.replace("scatter", "line")), dpi=500)
             plt.close()
-        return values[:, 0, :]
+        #return values[:, 0, :]
+        """
 
     @staticmethod
     def read_uba_station_data(station_name):
@@ -301,9 +336,16 @@ class Comparison:
             station_obs = np.array([str(obs).replace(",", ".") for obs in station_obs])
             station_obs[station_obs == "-"] = "0"
             station_obs = np.float32(station_obs)[:365 * 24]
+            station_dates = np.array(station_pd["Datum"])
+            station_dates[[False if isinstance(d, str) else np.isnan(d) for d in station_dates]] = "01.01.1900"
+            station_dates_clear = []
+            for d in station_dates:
+                split = d.split(".")
+                station_dates_clear.append(split[2] + split[1] + split[0])
         else:
             station_obs = station_data.obs.values
-        return station_obs
+            station_dates_clear = uba_dates_braunschweig
+        return station_obs, station_dates_clear
 
     @staticmethod
     def compare_spatially(wind_directions, s2_values, comparison_values, wind_bins_low, wind_bins_up, dates,
@@ -435,6 +477,57 @@ class Comparison:
         plt.close()
 
     @staticmethod
+    def plot_all_uba_comparisons(all_values, all_dates, station_names):
+        s2_color = "#611840"
+        months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        stations = ["DESH022", "DERP046", "DESN075", "DEBY021", "DENI075", "DENI157", "DENI070", "DEST089",
+                    "DEBY072", "DENI020", "DEST002", "DESN004"]
+        t, rb, sb = "urban traffic", "rural background", "suburban background"
+        settings = [t, t, t, t, t, t, "rural industry", rb, rb, sb, sb, "urban background"]
+        fig, axes = plt.subplots(6, 4, figsize=(12, 13), gridspec_kw={"width_ratios": [2, 1, 2, 1]})
+        station_idx = -1
+        for ax_idx in range(len(axes.flatten())):
+            if (ax_idx % 2) == 0:
+                station_idx += 1
+                station, setting = stations[station_idx], settings[station_idx]
+                station_label = "Station NO$_{2}$"
+                idx = np.where(station_names == station)[0][0]
+                s2_values, station_values = all_values[idx][1, :], all_values[idx][0, :]
+                not_nan = ~np.isnan(s2_values) * ~np.isnan(station_values)
+                ax0 = axes.flatten()[ax_idx]
+                ax0.set_title("%s (%s)" % (station, setting))
+                formatted_dates = []
+                for d in all_dates[idx]:
+                    split = d.split("2018-")[-1].split("-")
+                    m = months[int(split[0]) - 1]
+                    formatted_dates.append("%s-%s" % (m, split[1]))
+                ax0.plot(formatted_dates, station_values, color="#3364ff", linewidth=2)
+                ax0.set_xticklabels(formatted_dates, rotation=90)
+                ax0.set_ylabel(station_label)
+                ax0a = ax0.twinx()
+                ax0a.plot(formatted_dates, s2_values, color=s2_color, linewidth=2)
+                ax0a.set_xticklabels(formatted_dates, rotation=90)
+                ax0a.set_ylabel("Sentinel-2 trucks")
+                ax1 = axes.flatten()[ax_idx + 1]
+                ax1.scatter(s2_values[not_nan], station_values[not_nan], s=9, color=s2_color)
+                try:
+                    m, b = np.polyfit(s2_values[not_nan], station_values[not_nan], 1)
+                except np.linalg.LinAlgError:
+                    pass
+                else:
+                    ax1.plot(s2_values, m * s2_values + b, color="black")
+                ax1.set_ylim(0, np.nanmax(station_values) * 1.05)
+                ax1.set_xlabel("Sentinel-2 trucks")
+                ax1.set_ylabel(station_label)
+                regression = linregress(s2_values[not_nan], station_values[not_nan])
+                x = -0.05 if all(s2_values == 0) else 0
+                info = "pearson r-value: %s" % (np.round(regression.rvalue, 2))
+                ax1.text(x, np.nanmax(station_values) * 1.1, info)
+        fig.tight_layout()
+        fig.savefig(os.path.join(dir_comparison_plots, "s2_vs_uba_grouped_lineplots_scatterplots.png"), dpi=700)
+        plt.close(fig)
+
+    @staticmethod
     def get_uba_station_buffer(station_pd_row, buffer_distance, crs):
         station_point_gpd = gpd.GeoDataFrame({"id": [0], "geometry": [Point([station_pd_row.lon,
                                                                              station_pd_row.lat])]}, crs="EPSG:4326")
@@ -561,11 +654,16 @@ class Comparison:
 
 
 if __name__ == "__main__":
-    uba_stations = pd.read_csv(uba_stations_locations_file, sep=";")
+    uba_stations = pd.read_csv(uba_stations_locations_file, sep=",")
     if not os.path.exists(dir_comparison_detections):
         os.mkdir(dir_comparison_detections)
+    uba_values_all, dates_all = [], []
     for uba_station in uba_stations["name"]:
-        comparison = Comparison(uba_stations[uba_stations["name"] == uba_station]["bast_aoi"].iloc[0], aoi_file)
-        comparison.run_comparison()
+        print(uba_station)
+        comparison = Comparison(uba_station, uba_stations[uba_stations["name"] == uba_station]["bast_aoi"].iloc[0],
+                                aoi_file)
+        uba_values, dates = comparison.run_comparison()
+        uba_values_all.append(uba_values)
+        dates_all.append(dates)
+    comparison.plot_all_uba_comparisons(uba_values_all, dates_all, uba_stations["name"])
   #  comparison.plot_s2_series()
-    print("Done")
