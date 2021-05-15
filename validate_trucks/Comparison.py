@@ -1,5 +1,6 @@
 import os
 import pickle
+import string
 import numpy as np
 import geopandas as gpd
 import pandas as pd
@@ -17,6 +18,7 @@ from SentinelHubDataAccess.SentinelHub import SentinelHub, DataCollection
 from detect_trucks.RandomForestTrucks import RFTruckDetector
 
 SH_CREDENTIALS_FILE = os.path.join("F:" + os.sep + "sh", "sh.txt")
+S2_COLOR = "#611840"
 
 resolution = 10
 
@@ -95,8 +97,8 @@ class Comparison:
             #finally:
         """
         uba_no2_arrays = self.compare_insitu_no2(detection_files)
-   #     for comparison_variable in comparison_variables:
-    #        self.s2_vs_s5p_model_no2(comparison_variable, detection_files, dates, uba_no2_arrays[0, :])
+     #   for comparison_variable in comparison_variables:
+      #      self.s2_vs_s5p_model_no2(comparison_variable, detection_files, dates, uba_no2_arrays[0, :])
         return uba_no2_arrays, dates
 
     def plot_s2_series(self):
@@ -127,8 +129,8 @@ class Comparison:
         self.compare_station_counts(np.array(detection_files)[date_sort], dates)  # call here because we have the files and dates
 
     def s2_vs_s5p_model_no2(self, raster_variable_name, detection_files, dates, uba_no2_arrays):
-        wind_bins_low = np.int16([45, 135])
-        wind_bins_up = np.int16([90, 225])
+        wind_bins_low = np.int16([0, 50, 135, 200])
+        wind_bins_up = np.int16([360, 135, 180, 250])
         uba_station_locations_pd = pd.read_csv(uba_stations_locations_file, sep=",", index_col=0)
       #  var0, var1 = comparison_variables[0], comparison_variables[1]
         var0 = comparison_variables[0]
@@ -145,7 +147,7 @@ class Comparison:
                 date_compact = date[0:4] + date[5:7] + date[-2:]
                 try:
                     comparison_raster_file = glob(
-                        os.path.join(dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[1]
+                        os.path.join(dir_comparison_s5p, "test_tropomi_NO2_%s*.nc" % date_compact))[0]
                 except IndexError:
                     continue
                 else:
@@ -207,11 +209,11 @@ class Comparison:
          #   meta["count"], meta["dtype"] = correlations.shape[0], np.float32
 
             correlation_rasters = self.compare_on_raster(np.float32(s2_arrays), np.float32(comparison_arrays[var0]),
-                                                         np.float32(wind_arrays), wind_bins_low, wind_bins_up)
+                                                         np.float32(wind_arrays), wind_bins_low, wind_bins_up, dates)
             meta["count"], meta["dtype"] = len(correlation_rasters), np.float32
-            with rio.open(os.path.join(dir_comparison_plots, "pearson_correlation_%s_%s_%s_%s.tif"
-                                                             % (wind_bins_low[0], wind_bins_up[0],
-                                                                wind_bins_low[1], wind_bins_up[1])), "w", **meta) as tgt:
+            fname_str = "_".join([str(b) for b in np.hstack([wind_bins_low, wind_bins_up])])
+            file = os.path.join(dir_comparison_plots, "pearson_correlation_%s.tif" % fname_str)
+            with rio.open(file, "w", **meta) as tgt:
                 for i, arr in enumerate(correlation_rasters):
                     tgt.write(arr.astype(np.float32), i + 1)
 
@@ -237,24 +239,88 @@ class Comparison:
           #  self.line_plot_summary(dates, np.float32(s2_window_mean),
            #                        comparison_at_station, np.float32(uba_values), np.float32(wind_mean), row.name)
 
-
-    def compare_on_raster(self, s2_arr, comparison_arr, wind, wind_low, wind_up):
+    def compare_on_raster(self, s2_arr, comparison_arr, wind, wind_low, wind_up, dates):
+        wind_color = "#47586b"
         rvalue_arr = np.zeros((len(wind_low), s2_arr.shape[1], s2_arr.shape[2]))
+        s2_high_rvalue, comp_high_rvalue = [], []
+        n_used_dates = [[], [], [], []]
         for i, low, up in zip(range(len(wind_low)), wind_low, wind_up):
             for y in range(rvalue_arr.shape[1]):
                 for x in range(rvalue_arr.shape[2]):
-                    ymax, xmax = np.clip(y + 2, 0, rvalue_arr.shape[1] - 1), np.clip(x + 2, 0, rvalue_arr.shape[2] - 1)
-                    ymin, xmin = int(np.clip(y - 1, 0, np.inf)), int(np.clip(x - 1, 0, np.inf))
-                    time = np.where((wind[:, y, x] >= low) * (wind[:, y, x] < up))[0]
-                    if len(time) < 5 or np.count_nonzero(s2_arr[time, y, x] > 5) == 0:
+                    time = np.where((wind[:, y, x] >= low) * (wind[:, y, x] <= up))[0]
+                    n_used_dates[i].append(len(time))
+                    if len(time) < 3 or np.count_nonzero(s2_arr[time, y, x] > 0) == 0:
                         rvalue = 0
                     else:
                         s2 = s2_arr[time, y, x]
                         comp = comparison_arr[time, y, x]
                         rvalue = np.round(linregress(s2, comp).rvalue, 2)
                     rvalue_arr[i, y, x] = rvalue
+                    if rvalue > 0.5:
+                        s2_high_rvalue.append(s2)
+                        comp_high_rvalue.append(comp)
+        # lineplots
+        fig, axes = plt.subplots(2, 5, figsize=(12, 3.5))
+        axes = axes.flatten()
+        i = 2
+        negative_ax_idx, positive_ax_idx = 5, 0
+        low, up = wind_low[i], wind_up[i]
+        ys0, xs0 = np.where(rvalue_arr[i] > 0.9)
+        ys1, xs1 = np.where(rvalue_arr[i] < -0.96)
+        for y0, y1, x0, x1 in zip(ys0, ys1, xs0, xs1):
+            for y, x in zip([y0, y1], [x0, x1]):
+                #print("y    %s    x     %s" % (y, x))
+                time = np.where((wind[:, y, x] >= low) * (wind[:, y, x] <= up))[0]
+                s2 = s2_arr[time, y, x]
+                comp = comparison_arr[time, y, x]
+                rvalue = np.round(linregress(s2, comp).rvalue, 2)
+                if (negative_ax_idx == len(axes) and rvalue < -0.9) or (positive_ax_idx == int(len(axes) * 0.5) and rvalue > 0.9):
+                    print(rvalue)
+                    print("Too few axes")
+                    continue
+                if rvalue > 0.9 or rvalue < -0.9:
+                    ax_idx = negative_ax_idx if rvalue < 0 else positive_ax_idx
+                    d = np.array(dates)[time]
+                    if rvalue > 0.9:
+                        print("High")
+                    else:
+                        print("Low")
+                    print("y=%s; x=%s" % (y, x))
+                    print("--" * 10)
+                    axes[ax_idx].plot(d, s2, S2_COLOR)
+                    axes[ax_idx].set_title("[%s]" % string.ascii_uppercase[ax_idx])
+                    axes[ax_idx].set_xticklabels(d, rotation=45)
+                    ax = axes[ax_idx].twinx()
+                    ax.plot(d, comp, "#0f4880")
+                    ax.set_xticklabels(d, rotation=45)
+                    axes[ax_idx].set_ylabel("Sentinel-2 trucks")
+                    ax.set_ylabel("S5P NO$_{2}$ column")
+                    if rvalue < 0:
+                        negative_ax_idx += 1
+                    else:
+                        positive_ax_idx += 1
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.8)
+        fig.savefig(os.path.join(dir_comparison_plots, "S2_vs_S5P_%s_%s_grouped_lineplot.png" % (low, up)), dpi=600)
+        plt.close(fig)
+        # rvalue histogram
+        fig, ax = plt.subplots(figsize=(4, 2))
+        ax.hist(rvalue_arr[i][rvalue_arr[i] != 0].flatten(), 39, color=S2_COLOR)
+        ax.set_ylabel("Value count")
+        ax.set_xlabel("pearson-rvalue")
+        fig.tight_layout()
+        fig.savefig(os.path.join(dir_comparison_plots, "S2_vs_S5P_%s_%s_rvalues_hist.png" % (low, up)), dpi=600)
+        plt.close(fig)
+        # wind histogram
+        fig, ax = plt.subplots(figsize=(4, 2))
+        ax.hist(wind.flatten(), 36, color=wind_color)
+        ax.set_xlabel("Meteorological wind direction [°]")
+        ax.set_ylabel("Value count")
+        ax.text(320, 200, "n=%s" % str(len(wind.flatten()[~np.isnan(wind.flatten())])))
+        fig.tight_layout()
+        fig.savefig(os.path.join(dir_comparison_plots, "wind_directions_histplot.png"), dpi=500)
+        plt.close(fig)
         return rvalue_arr
-
 
     def compare_insitu_no2(self, detection_files):
         crs = gpd.read_file(detection_files[0]).crs
@@ -490,7 +556,7 @@ class Comparison:
             if (ax_idx % 2) == 0:
                 station_idx += 1
                 station, setting = stations[station_idx], settings[station_idx]
-                station_label = "Station NO$_{2}$"
+                station_label = "Station NO$_{2}$ [µg/m3]"
                 idx = np.where(station_names == station)[0][0]
                 s2_values, station_values = all_values[idx][1, :], all_values[idx][0, :]
                 not_nan = ~np.isnan(s2_values) * ~np.isnan(station_values)
