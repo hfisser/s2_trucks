@@ -40,7 +40,8 @@ class KenyaValidator:
         self.abc = ""
 
     def main(self):
-        detection_dict = self.create_detection_series_plots()
+        self.compare_with_aq_stations()
+        #detection_dict = self.create_detection_series_plots()
 
     def create_detection_series_plots(self):
         station_aois = self.create_station_aois()
@@ -144,56 +145,103 @@ class KenyaValidator:
 
     def compare_with_aq_stations(self):
         nairobi_str = "36.69794740804024_-1.4111878854315625_36.95546936051763_-1.1352715077772113"
-        #   station_files = glob(os.path.join(dirs["main"], "*pm2.5.csv"))
         detection_files = glob(os.path.join(dirs["detection_boxes"], "archive", "*%s*.gpkg" % nairobi_str))
         station_files = glob(os.path.join(dirs["aq_stations"], "*.csv"))
         measurements = pd.DataFrame()
-        station_points = {}
-        for row_idx, detection_file in enumerate(detection_files[:5]):
+        station_points, station_buffers = {}, {}
+        for row_idx, detection_file in enumerate(detection_files):
             date = self.get_date(detection_file)
+            other_files_of_date = glob(os.path.join(dirs["detection_boxes"], "archive", "*%s*.gpkg" % date))
+            other_detections = []
+            for other_file in other_files_of_date:
+                other_detections.append(gpd.read_file(other_file))
             y, m = date.split("-")[0], MONTHS_LIST_LONG[int(date.split("-")[1]) - 1]
             m = m[0].lower() + m[1:]
             try:
                 station_data = pd.read_csv(glob(os.path.join(dirs["aq_stations"], "_".join([m, y, "*.csv"])))[0], sep=";")
             except IndexError:
-                break
-            station_data = station_data[station_data["value_type"] == "P1"]
-            for sensor_id in np.unique(station_data["sensor_id"]):
+                continue
+            station_data = station_data[station_data["value_type"] == "P2"]
+            for sensor_id in [100, 44, 43]:
                 sensor_data = station_data[station_data["sensor_id"] == sensor_id]
                 timestamp = sensor_data.timestamp
                 error, n = True, -1
-                times = ["10", "09", "11", "08", "12"]
+                times = ["10", "09", "11", "08", "12", "13", "14", "15", "16"]
                 while error and n < (len(times) - 1):
                     n += 1
                     match = self.get_ts_match_station_data(timestamp, date, times[n])
                     try:
-                        measurements.loc[row_idx, str(sensor_id)] = sensor_data[match].iloc[0].value
-                        error = False
+                        if len(match) > 1:
+                            measurements.loc[row_idx, str(sensor_id)] = np.nanmean(np.float32(sensor_data[match].value))
+                        else:
+                            measurements.loc[row_idx, str(sensor_id)] = sensor_data[match].iloc[0].value
+                        error = False if np.count_nonzero(match) > 0 else True
                     except IndexError:
                         error = True
                 if error:
                     measurements.loc[row_idx, str(sensor_id)] = np.nan
+                    continue
                 else:
                     row = sensor_data[match].iloc[0]
                     lon, lat = row.lon, row.lat
                     measurements.loc[row_idx, str(sensor_id)] = row.value
-                    print(row.value)
+                    measurements.loc[row_idx, str(sensor_id) + "_date"] = date
                     station_point = gpd.GeoDataFrame({"geometry": [Point(float(lon), float(lat))]},
-                                                      crs="EPSG:4326")
+                                                       crs="EPSG:4326")
                     station_points[sensor_id] = station_point
                     station_buffer = station_point.to_crs(NAIROBI_UTM).buffer(5000)
-                    measurements.loc[row_idx, str(sensor_id) + "_Sentinel-2"] = len(gpd.clip(gpd.read_file(detection_file),
-                                                                                             station_buffer))
+                    station_buffers[sensor_id] = station_buffer
+                    g = gpd.GeoDataFrame(pd.concat(other_detections, join="inner"))
+                    g.index = range(len(g))
+                    clipped = gpd.clip(g, station_buffer)
+                    measurements.loc[row_idx, str(sensor_id) + "_Sentinel-2"] = len(clipped)
 
+        fig, axes = plt.subplots(1, 4, figsize=(12, 2.5), gridspec_kw={"width_ratios": [2, 1, 2, 1]})
+        idx = -1
+        for station_name in ["44", "100"]:
+            idx += 1
+            if (idx % 2) == 0:
+                dates = np.array(list(measurements[station_name + "_date"]))
+                station_values = np.float32(list(measurements[station_name]))
+                s2_values = np.float32(list(measurements["%s_Sentinel-2" % station_name]))
+                not_nan = ~np.isnan(station_values) * ~np.isnan(s2_values)
+                station_values, s2_values, dates = station_values[not_nan], s2_values[not_nan], dates[not_nan]
+                ax = axes.flatten()[idx]
+                ax.plot(dates, station_values, color="#4d617c", linewidth=2)
+                ylabel = "Station PM2.5 [µg/m3]"
+                ax.set_ylabel(ylabel)
+                ax.set_title("Station ID: %s" % station_name)
+                ax.set_xticklabels(dates, rotation=90)
+                ax.set_xlim(0, len(dates) - 1)
+                ax1 = ax.twinx()
+                ax1.plot(dates, s2_values, color=S2_COLOR, linewidth=2)
+                ax1.set_ylabel("Sentinel-2 trucks")
+                ax1.set_xticklabels(dates, rotation=90)
+                ax = axes.flatten()[idx + 1]
+                ax.scatter(s2_values, station_values, s=9, color=S2_COLOR)
+                ax.set_ylabel(ylabel)
+                ax.set_xlabel("Sentinel-2 trucks")
+                try:
+                    m, b = np.polyfit(s2_values, station_values, 1)
+                except np.linalg.LinAlgError:
+                    pass
+                else:
+                    ax.plot(s2_values, m * s2_values + b, color="black")
+                ax.set_title("pearson r-value: %s" % np.round(linregress(s2_values, station_values).rvalue, 2))
+                idx += 1
+        fig.tight_layout()
+        fig.savefig(os.path.join(dirs["validation_plots"], "kenya_s2_trucks_pm2.5_station.png"), dpi=500)
+        plt.close(fig)
 
-        #detection_files = glob(os.path.join(dirs["detection_boxes"], "*nairobi*.gpkg"))
+        station_files = glob(os.path.join(dirs["main"], "*pm2.5.csv"))
+        detection_files = glob(os.path.join(dirs["detection_boxes"], "*nairobi*.gpkg"))
         detection_dates = np.array([self.get_date(f) for f in detection_files])
         detections = [gpd.read_file(f) for f in detection_files]
         rvalues = {}
         for station_file in station_files:
             data = pd.read_csv(station_file)
             buffer = gpd.GeoDataFrame({"geometry": [Point(
-                data.iloc[0].longitude, data.iloc[0].latitude)]}, crs="EPSG:4326").to_crs(NAIROBI_UTM).buffer(20000)
+                data.iloc[0].longitude, data.iloc[0].latitude)]}, crs="EPSG:4326").to_crs(NAIROBI_UTM).buffer(5000)
             n_detections = np.zeros(len(detections))
             for i, detection_boxes in enumerate(detections):
                 n_detections[i] = len(gpd.clip(detection_boxes.to_crs(NAIROBI_UTM), buffer))
@@ -208,7 +256,8 @@ class KenyaValidator:
                                                                  list(station_measurements.values())).rvalue
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.plot(station_measurements.keys(), station_measurements.values(), color="#00FF00")
-            ax.plot(s2_detections.keys(), np.int16(list(s2_detections.values())) / 7, color=S2_COLOR)
+            ax1 = ax.twinx()
+            ax1.plot(s2_detections.keys(), np.int16(list(s2_detections.values())), color=S2_COLOR)
 
     @staticmethod
     def get_ts_match_station_data(ts, date, time):
