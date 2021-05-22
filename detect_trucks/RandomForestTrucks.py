@@ -31,8 +31,8 @@ dirs["osm"] = os.path.join(dirs["main"], "code", "detect_trucks", "AUXILIARY", "
 dirs["imgs"] = os.path.join(dirs["main"], "data", "s2", "subsets")
 tiles_pd = pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=";")
 
-s2_files = [os.path.join("F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\data\\s2\\archive",
-                        "s2_bands_Braunschweig-Flughafen_2018-06-06_2018-06-06_merged.tiff")]
+s2_files = ["F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\validation\\data\\s2\\archive\\s2_bands_Salzbergen_2018-07-07_2018-07-07_merged.tiff"]
+s2_files = ["F:\\Masterarbeit\\DLR\\project\\1_truck_detection\\data\\s2\\subsets\\S2A_MSIL2A_20210516T102021_N0300_R065_T32UNC_20210516T115839.tif"]
 
 do_tuning = False
 truth_path_training = os.path.join(dirs["truth"], "spectra_ml_training_tiles.csv")
@@ -42,11 +42,10 @@ osm_buffer = 20
 SECONDS_OFFSET_B02_B04 = 1.01  # sensing offset between B02 and B04
 
 # RF hyper parameters from hyper parameter tuning
-N_ESTIMATORS = 1200
-MIN_SAMPLES_SPLIT = 8
-MIN_SAMPLES_LEAF = 2
+N_ESTIMATORS = 800
+MIN_SAMPLES_SPLIT = 5
 MAX_FEATURES = "sqrt"
-MAX_DEPTH = 66
+MAX_DEPTH = 90
 BOOTSTRAP = True
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.pickle")
@@ -72,7 +71,7 @@ class RFTruckDetector:
         except FileNotFoundError:
             rf = RandomForestClassifier(n_estimators=N_ESTIMATORS,
                                         min_samples_split=MIN_SAMPLES_SPLIT,
-                                        min_samples_leaf=MIN_SAMPLES_LEAF,
+                                        min_samples_leaf=1,
                                         max_features=MAX_FEATURES,
                                         max_depth=MAX_DEPTH,
                                         bootstrap=BOOTSTRAP,
@@ -86,10 +85,8 @@ class RFTruckDetector:
         self._load_truth()
         tuning_pd = pd.DataFrame()
         hyper_hyper = {"n_estimators": list(np.int16(np.linspace(start=100, stop=2000, num=20))),
-                       "max_features": ["auto", "sqrt"],
                        "max_depth": list(np.int16(np.linspace(start=10, stop=100, num=20))),
-                       "min_samples_split": list(np.int16(np.linspace(start=2, stop=20, num=20))),
-                       "min_samples_leaf": list(np.int16(np.linspace(start=1, stop=20, num=20))),
+                       "min_samples_split": list(np.int16(np.linspace(start=2, stop=7, num=6))),
                        "bootstrap": [True]}
         rf = RandomForestClassifier()
         rf_random = RandomizedSearchCV(estimator=rf, param_distributions=hyper_hyper,
@@ -99,6 +96,9 @@ class RFTruckDetector:
         for key, value in rf_random.best_params_.items():
             tuning_pd[key] = [value]
         tuning_pd.to_csv(tuning_path)
+        print(tuning_pd.values)
+        print(tuning_pd.columns)
+        print(rf_random.best_score_)
 
     def preprocess_bands(self, band_stack, subset_box=None):
         bands_rescaled = band_stack[0:4].copy()
@@ -116,8 +116,8 @@ class RFTruckDetector:
             t[2], t[5] = self.lon[0], self.lat[0]
             self.meta["transform"] = Affine(t[0], t[1], t[2], t[3], t[4], t[5])
         bbox_epsg4326 = list(np.flip(metadata_to_bbox_epsg4326(self.meta)))
-        osm_mask = self._get_osm_mask(bbox_epsg4326, self.meta["crs"], bands_rescaled[0], {"lat": self.lat,
-                                                                                           "lon": self.lon},
+        osm_mask = self._get_osm_mask(bbox_epsg4326, "EPSG:" + str(self.meta["crs"].to_epsg()),
+                                      bands_rescaled[0], {"lat": self.lat, "lon": self.lon},
                                       dirs["osm"])
         if np.count_nonzero(osm_mask) == 0:
             raise ValueError("No OSM roads of requested road types in aoi")
@@ -152,15 +152,16 @@ class RFTruckDetector:
         probabilities_shaped = np.swapaxes(probabilities_shaped, 0, 1)
         probabilities_shaped = probabilities_shaped.reshape((probabilities_shaped.shape[0], self.variables.shape[1],
                                                              self.variables.shape[2]))
-        probabilities_shaped[np.isnan(probabilities_shaped)] = 0
+      #  probabilities_shaped[np.isnan(probabilities_shaped)] = 0
         meta = self.meta.copy()
         meta["count"] = probabilities_shaped.shape[0]
         meta["dtype"] = np.float32
-        with rio.open(os.path.join(dirs["main"], "probs.tiff"), "w", **meta) as tgt:
-            for i in range(probabilities_shaped.shape[0]):
-                tgt.write(probabilities_shaped[i].astype(np.float32), i + 1)
+  #      with rio.open(os.path.join(dirs["main"], "probs.tif"), "w", **meta) as tgt:
+   #         tgt.write(probabilities_shaped.astype(meta["dtype"]))
         self.probabilities = probabilities_shaped
+        self.probabilities[:, np.isnan(self.variables[0])] = 0
         classification = self._postprocess_prediction()
+      #  classification[np.isnan(self.variables[0])] = 0
         self._elapsed(t0)
         return classification
 
@@ -173,11 +174,10 @@ class RFTruckDetector:
         return out_gpd
 
     def _load_truth(self):
-        truth_training = pd.read_csv(truth_path_training)
+        truth_training, truth_validation = pd.read_csv(truth_path_training), pd.read_csv(truth_path_validation)
         indices = np.where(truth_training["label_int"] == 1)[0]
-        for idx in np.random.choice(indices, int(len(indices) * 0.66), replace=False):
-            truth_training.drop(idx, inplace=True)
-        truth_validation = pd.read_csv(truth_path_validation)
+#        for idx in np.random.choice(indices, int(len(indices) * 0.66), replace=False):
+ #           truth_training.drop(idx, inplace=True)
         labels_training, variables_training = truth_training["label_int"], []
         labels_validation, variables_validation = truth_validation["label_int"], []
         for key in ["reflectance_var", "red_blue_ratio", "green_blue_ratio",
@@ -190,12 +190,12 @@ class RFTruckDetector:
 
     def _build_variables(self, band_stack):
         shape = band_stack.shape
-        for band_idx in range(shape[0]):
-            band_stack[band_idx] -= np.nanmean(band_stack[band_idx])
         variables = np.zeros((7, shape[1], shape[2]), dtype=np.float16)
         variables[0] = np.nanvar(band_stack[0:3], 0, dtype=np.float16)
         variables[1] = normalized_ratio(band_stack[0], band_stack[2]).astype(np.float16)  # red/blue
         variables[2] = normalized_ratio(band_stack[1], band_stack[2]).astype(np.float16)  # green/blue
+        for band_idx in range(shape[0]):
+            band_stack[band_idx] -= np.nanmean(band_stack[band_idx])
         variables[3] = band_stack[0]
         variables[4] = band_stack[1]
         variables[5] = band_stack[2]
@@ -215,7 +215,11 @@ class RFTruckDetector:
         return arr
 
     def _postprocess_prediction(self):
-        classification = np.argmax(self.probabilities, 0) + 1
+#        for idx in range(1, self.probabilities.shape[0]):
+ #           self.probabilities[idx][self.probabilities[idx] < 0.25] = 0
+        self.probabilities[1][self.probabilities[1] < 0.75] = 0
+        classification = np.nanargmax(self.probabilities, 0) + 1
+        classification[np.max(self.probabilities, 0) == 0] = 0
         return classification.astype(np.int8)
 
     def read_bands(self, path):
@@ -267,7 +271,7 @@ class RFTruckDetector:
     @staticmethod
     def calc_speed(box_shape):
         diameter = np.max(box_shape) * 10 - 10  # 10 m resolution; -10 for center of pixel
-        return diameter/SECONDS_OFFSET_B02_B04 * 3.6
+        return np.sqrt(diameter * 20)/SECONDS_OFFSET_B02_B04 * 3.6
 
     @staticmethod
     def calc_vector_direction_in_degree(vector):
