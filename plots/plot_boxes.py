@@ -19,7 +19,6 @@ truth_path_validation = os.path.join(dirs["truth"], "spectra_ml_validation_tiles
 
 
 def plot_box_size(tiles_pd):
-    color = "#425b69"
     all_boxes = {}
     for column, n in zip(["training_tiles", "validation_tiles"], [250, 35]):
         all_boxes[column] = []
@@ -62,21 +61,19 @@ def plot_box_size(tiles_pd):
 #    idx = 0
     all_areas = np.hstack(all_areas)
     parts = ax.violinplot(all_areas, showmeans=False, showextrema=False)
-    for pc in parts["bodies"]:
-        pc.set_alpha(1)
-        pc.set_facecolor(color)
-    quartile1, medians, quartile3 = np.percentile(all_areas, [25, 50, 75])
-    inds = np.arange(1, 2)
-    ax.scatter(inds, medians, marker="o", color="white", s=30, zorder=3)
-    ax.vlines(inds, quartile1, quartile3, color="k", linestyle="-", lw=5)
- #   axes[idx].set_title("%s (n=%s)" % ("Number of pixels/box", len(all_areas)))
+    parts["bodies"][0].set_alpha(1)
+    parts["bodies"][0].set_facecolor("#ffe201")
+    parts["bodies"][0].set_edgecolor("#363636")
+    ax.scatter([1], np.mean(all_areas), marker="o", color="white", s=30, zorder=3)
+    ax.vlines([1], np.percentile(all_areas, [25])[0], np.percentile(all_areas, [75])[0],
+              color="k", linestyle="-", lw=5)
+    ax.vlines([1], np.min(all_areas), np.max(all_areas), color="k", linestyle="-", lw=1)
     ax.set_ylabel("Number of pixels")
     ax.set_xticks([])
     ax.set_xticklabels([])
 #    plt.savefig(os.path.join(dirs["plots"], "training_validation_box_dimensions_violinplot.png"), dpi=500)
  #   plt.close()
-    means = {}
-    countries = []
+    means, countries = {}, []
  #   fix, ax = plt.subplots(figsize=(8, 5))
     plt.subplots_adjust(bottom=0.25)
     for idx, key in enumerate(["training_tiles", "validation_tiles"]):

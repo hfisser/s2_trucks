@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import geopandas as gpd
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -78,7 +79,7 @@ def plot_bast_validation_rvalues():
     files = glob(os.path.join(dirs["validation"], "validation*.csv"))
     rvalues, slopes, names, colors = np.zeros(len(files) + 2), np.zeros(len(files) + 2), [], []
     s2_detections, station_detections = np.zeros_like(rvalues), np.zeros_like(rvalues)
-    all_s2_counts, all_station_counts, all_dates, all_weekdays = [], [], [], []
+    all_s2_counts, all_station_counts, all_dates, all_weekdays, speeds = [], [], [], [], []
     for idx, file in enumerate(files):
         names.append(file.split("_run_")[-1].replace("_", " ").replace(".csv", ""))
         c = "#af2c74" if any([n in file for n in primary_road]) else S2_COLOR
@@ -150,22 +151,77 @@ def plot_bast_validation_rvalues():
     colors.append("black")  # mean
     rvalues[-1] = np.round(np.median(rvalues[:-1]), 2)
     rvalues[-2] = np.round(np.mean(rvalues[:-1]), 2)
+    slopes[-1] = np.round(np.median(slopes[:-1]), 2)
+    slopes[-2] = np.round(np.mean(slopes[:-1]), 2)
     names.append(r"$\bf{""Mean""}$")
     names.append(r"$\bf{""Median""}$")
     rvalues_argsort = np.argsort(rvalues)
     names_sorted, colors_sorted = np.array(names)[rvalues_argsort], np.array(colors)[rvalues_argsort]
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.barh(y=names_sorted, width=rvalues[rvalues_argsort], color=colors_sorted)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].barh(y=names_sorted, width=rvalues[rvalues_argsort], color=colors_sorted)
     for idx, rvalue in enumerate(rvalues[rvalues_argsort]):
-        ax.text(rvalue + 0.001, idx - 0.3, str(rvalue), fontsize=10)
-    ax.set_xlabel("pearson r-value")
+        axes[0].text(rvalue + 0.001, idx - 0.3, str(rvalue), fontsize=10)
+    axes[0].set_xlabel("pearson r-value")
     handles = [plt.Rectangle((0, 0), 1, 1, color=color) for color in np.unique(colors_sorted)[:-1]]
-    ax.legend(handles, ["Motorway (A)", "Primary/Trunk (B)"])
-    plt.ylim(-0.5, len(names_sorted) - 0.5)
+    axes[0].legend(handles, ["Motorway (A)", "Primary/Trunk (B)"])
+    axes[0].set_ylim(-0.5, len(names_sorted) - 0.5)
+    axes[0].set_xlim(0, 1.03)
+    axes[0].set_title("Pearson r-value")
+    # plot slopes
+    axes[1].barh(y=names_sorted, width=slopes[rvalues_argsort], color=colors_sorted)
+    axes[1].set_yticks([])
+    axes[1].set_yticklabels([])
+    axes[1].set_xlabel("Lin. regression slope")
+    axes[1].set_ylim(-0.5, len(names_sorted) - 0.5)
+    axes[1].set_xlim(0, 2.52)
+    for idx, slope in enumerate(slopes[rvalues_argsort]):
+        axes[1].text(slope + 0.001, idx - 0.3, str(slope), fontsize=10)
+    axes[1].set_title("Slope")
+    fig.tight_layout()
+    fig.savefig(os.path.join(dirs["validation"], "plots", "station_validation_rvalues_by_station_barh.png"), dpi=500)
+    plt.close(fig)
+
+
+def plot_detection_attributes():
+    files = glob(os.path.join(dirs["validation"], "detections", "s2_detections*.gpkg"))
+    speeds, headings, scores = [], [], []
+    for file in files:
+        if "Steinebrück" in file:
+            continue
+        else:
+            detections = gpd.read_file(file)
+            detections = detections[detections["score"] > 1.2]
+            speeds.append(detections["speed"])
+            headings.append(detections["direction_description"])
+            scores.append(detections["score"])
+    speeds, headings, scores = np.hstack(speeds), np.hstack(headings), np.hstack(scores)
+    fig, axes = plt.subplots(1, 3, figsize=(8, 2.5))
+    c = "#611840"
+    for ax, values, title in zip(axes.flatten(), [speeds, headings, scores], ["Speeds", "Headings", "Detection scores"]):
+        print(title)
+        if title == "Headings":
+            directions = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
+            heading_counts = [np.count_nonzero(values == h) for h in directions]
+            ax.bar(x=directions, height=heading_counts, color=c)
+            ax.set_xlabel("Compass direction")
+        else:
+            parts = ax.violinplot(values, showmeans=False, showextrema=False)
+            parts["bodies"][0].set_alpha(1)
+            parts["bodies"][0].set_facecolor(c)
+            parts["bodies"][0].set_edgecolor("#363636")
+        #    parts["bodies"][0].set_edgecolor("black")
+            ax.scatter([1], np.mean(values), marker="o", color="white", s=30, zorder=3)
+            ax.vlines([1], np.percentile(values, [25])[0], np.percentile(values, [75])[0],
+                      color="k", linestyle="-", lw=5)
+            ax.vlines([1], np.min(values), np.max(values), color="k", linestyle="-", lw=1)
+            ax.set_xticklabels([])
+            ax.set_xticks([])
+        ax.set_title(title)
     plt.tight_layout()
-    plt.savefig(os.path.join(dirs["validation"], "plots", "station_validation_rvalues_by_station_barh.png"), dpi=500)
+    plt.savefig(os.path.join(dirs["validation"], "plots", "speed_heading_score_violinplot_barplot.png"), dpi=500)
     plt.close()
 
 
 if __name__ == "__main__":
     plot_bast_validation_rvalues()
+    plot_detection_attributes()

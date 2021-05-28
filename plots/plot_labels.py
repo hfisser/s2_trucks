@@ -168,7 +168,12 @@ def plot_label_stats(truth):
             parts["cmeans"].set_edgecolor("black")
             for pc, color in zip(parts["bodies"], colors[ax_idx]):
                 pc.set_facecolor(color)
+                pc.set_edgecolor("#363636")
                 pc.set_alpha(1)
+            ax.scatter(xticks, np.mean(np.float32(ax_values), 1), marker="o", color="white", s=15, zorder=3)
+            ax.vlines(xticks, np.percentile(ax_values, [25], 1), np.percentile(ax_values, [75])[0],
+                      color="k", linestyle="-", lw=5)
+            ax.vlines(xticks, np.min(ax_values, 1), np.max(ax_values, 1), color="k", linestyle="-", lw=1)
             if ax_idx == 0:
                 ax.set_ylim(-0.25, 0.25)
                 ax.text(-1.4, -0.02, "'%s'" % label, fontsize=13)  # place class label
