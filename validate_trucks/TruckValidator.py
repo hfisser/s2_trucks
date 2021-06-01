@@ -253,7 +253,6 @@ class Validator:
                                               crs="EPSG:326" + str(self.station_meta["utm_zone"]))
         station_buffer_gpd.to_file(os.path.join(
             dir_validation, "buffer_aoi_%s" % os.path.basename(detections_file).split("_")[-1]), driver="GPKG")
-        return
         try:
             detections_in_buffer = gpd.overlay(self.detections.to_crs(station_buffer_gpd.crs),
                                                station_buffer_gpd, "intersection")
@@ -264,7 +263,7 @@ class Validator:
         for row in detections_in_buffer.iterrows():
             detection_point = row[1].geometry.centroid
             a = np.float32([detection_point.x, detection_point.y])
-            station_direction, heading = self.calc_vector_direction_in_degree(a - b), row[1].direction_degree
+            station_direction, heading = self.calc_vector_direction_in_degree(b - a), row[1].direction_degree
             # abs. difference between calculated heading and station direction must be < 90 (heading away from station)
             # this only works when the road is relatively balanced like highways, not many curves
             match = np.abs(station_direction - heading) < 90  # first try this
@@ -341,7 +340,7 @@ class Validator:
                 continue
             validation_boxes = gpd.read_file(glob(os.path.join(dir_labels, "*%s*.gpkg" % tile))[0])
             try:
-                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[1000000]  # fail
+                prediction_boxes_file = glob(os.path.join(self.dirs["detections"], "*%s*.gpkg" % tile))[0]  # fail
             except IndexError:
                 lens = np.int32([len(x) for x in imgs])
                 img_file = imgs[np.where(lens == lens.max())[0]][0]
@@ -369,19 +368,24 @@ class Validator:
             prediction_array, band_data, rf_td = None, None, None
             # iterate over score thresholds and plot precision and recall curve
             for score_threshold in np.arange(0, 2, 0.1):
-                prediction_boxes = prediction_boxes[prediction_boxes["score"] >= score_threshold]
+                prediction_boxes = prediction_boxes[prediction_boxes["score"] > score_threshold]
                 tp = 0
                 intersection_over_union = []
-                for prediction_box in prediction_boxes.geometry:
+                yet_seen_validation_boxes = []
+                for row_idx, prediction_box in enumerate(prediction_boxes.geometry):
                     for validation_box in validation_boxes.geometry:
-                        if prediction_box.intersects(validation_box):
-                            union = prediction_box.union(validation_box)
-                            intersection = prediction_box.intersection(validation_box)
-                            iou = intersection.area/union.area
-                            if iou > 0.25:
-                                intersection_over_union.append(iou)
-                                tp += 1
-                                break
+                        if validation_box in yet_seen_validation_boxes:
+                            continue
+                        else:
+                            if prediction_box.intersects(validation_box):
+                                union = prediction_box.union(validation_box)
+                                intersection = prediction_box.intersection(validation_box)
+                                iou = intersection.area/union.area
+                                if iou > 0.25:
+                                    yet_seen_validation_boxes.append(validation_box)
+                                    intersection_over_union.append(iou)
+                                    tp += 1
+                                    break
             #    for validation_box in validation_boxes.geometry:
              #       for prediction_box in prediction_boxes.geometry:
               #          if validation_box.intersects(prediction_box):
@@ -595,7 +599,7 @@ class Validator:
                      "T35TMK": "Romania", "T37MCT": "Kenya", "T52SDE": "South Korea", "T12SUC": "USA",
                      "T60HUD": "New Zealand", "T21HUB": "Argentina"}
         labels, aucs, f1_scores, accuracies, scores = [], [], [], [], None
-        max_recalls, max_precisions = [], []
+        max_recalls, max_precisions, f1_at_best_score = [], [], []
         for idx, file, ax in zip(range(len(unique_files)), unique_files, axes.flatten()):
             tile = file.split("_")[-3]
             labels.append(tile + " (%s)" % countries[tile])
@@ -604,10 +608,11 @@ class Validator:
             precision = np.float32(boxes_validation_subset["precision"])
             recall = np.float32(boxes_validation_subset["recall"])
             accuracies.append(np.float32(boxes_validation_subset["accuracy"]))
-            f_score = 2 * ((precision * recall) / (precision + recall))
-            f_score[np.isnan(f_score)] = 0
+            f1_score = 2 * ((precision * recall) / (precision + recall))
+            f1_score[np.isnan(f1_score)] = 0
             ax.plot(recall, precision, color=c, linewidth=3)
-            f1_scores.append(f_score)
+            f1_scores.append(f1_score)
+            f1_at_best_score.append(f1_score[np.where(scores == 1.2)[0][0]])
             ax.set_title(tile + " (%s)" % countries[tile])
             ax.set_ylim(0, 1.05)
             ax.set_xlim(0, 1)
@@ -620,7 +625,7 @@ class Validator:
         plt.close()
         # plot f-score and accuracy
         f1_scores_np = np.float32(f1_scores)
-        max_f1_scores = np.max(f1_scores_np, 1)
+        max_f1_scores = f1_scores_np[:, np.where(scores == 1.2)[0][0]]
         mean_f_score = np.mean(max_f1_scores)
         accuracies_np = np.float32(accuracies)
         max_accuracies = np.max(accuracies, 1)
@@ -663,6 +668,16 @@ class Validator:
             bast_truck.append(np.float32(validation_pd[NAME_TR1] + validation_pd[NAME_TR2]))
             bast_car.append(np.float32(validation_pd["KFZ_R1"] + validation_pd["KFZ_R2"]))
         s2_values_flat, bast_truck_flat, bast_car_flat = np.hstack(s2_values), np.hstack(bast_truck), np.hstack(bast_car)
+        mask_high = (bast_truck_flat > np.nanpercentile(bast_truck_flat, [75])[0])
+        diff_high = (bast_truck_flat[mask_high] / s2_values_flat[mask_high])
+        mask_low = (bast_truck_flat < np.nanpercentile(bast_truck_flat, [25])[0])
+        diff_low = (bast_truck_flat[mask_low] / s2_values_flat[mask_low])
+        print(np.nanmean(diff_high[np.isfinite(diff_high)]))
+        print(np.nanmean(diff_low[np.isfinite(diff_low)]))
+        print(np.count_nonzero(diff_high < 1) / len(diff_high) * 100)
+        print(np.count_nonzero(diff_high > 1) / len(diff_high) * 100)
+        print(np.count_nonzero(diff_low < 1) / len(diff_low) * 100)
+        print(np.count_nonzero(diff_low > 1) / len(diff_low) * 100)
         regress = linregress(s2_values_flat, bast_truck_flat)
         fig, ax = plt.subplots(figsize=(6, 2.5))
         ax.scatter(s2_values_flat, bast_truck_flat, s=1, color=S2_COLOR)
@@ -675,7 +690,8 @@ class Validator:
         formula = "y = %sx + %s" % (np.round(m, 2), np.round(b, 2))
         ax.plot(s2_values_flat, m * s2_values_flat + b, color="black")
         summary = "n=%s\nLin. regression\npearson r-value: %s\nslope: %s\nFormula: %s\np-value: %s\n\nRMSE: %s" % (
-            len(s2_values_flat), np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula, np.round(regress.pvalue, 2), rmse)
+            len(s2_values_flat), np.round(regress.rvalue, 2), np.round(regress.slope, 2), formula,
+            np.round(regress.pvalue, 2), np.round(rmse, 2))
         plt.text(210, 40, summary, fontsize=11)
         plt.text(-100, 40, " ")
         plt.tight_layout()
@@ -758,11 +774,15 @@ class Validator:
     def plot_at_selected_stations():
         selected_stations = ["Reken", "Braunschweig-Flughafen", "Lathen", "Reussenberg", "Schwandorf-Mitte",
                              "Odelzhausen", "Strasburg", "Lenting", "Röstebachtalbrücke", "Herzhausen", "Sprakensehl", "Crailsheim-Süd"]
+        selected_stations = [f.split("validation_run_")[1].split(".csv")[0] for f in glob(os.path.join(dir_validation,
+                                                                                               "validation_run_*.csv"))]
+        n = len(selected_stations)
         months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        positions = np.array([48, 180, 27.5, 132, 77, 121, 19, 126, 66, 12, 20, 6.75]) * 0.62
-        fig, axes = plt.subplots(6, 4, gridspec_kw={"width_ratios": [2, 1, 2, 1]}, figsize=(12, 13))
-        fig1, axes1 = plt.subplots(2, 3, figsize=(12, 6))
-        fig2, axes2 = plt.subplots(2, 3, figsize=(12, 6))
+       # positions = np.array([48, 180, 27.5, 132, 77, 121, 19, 126, 66, 12, 20, 6.75]) * 0.62
+        fig, axes = plt.subplots(int(n * 0.5), 4, gridspec_kw={"width_ratios": [2, 1, 2, 1]},
+                                 figsize=(12, 13))
+        fig1, axes1 = plt.subplots(7, 4, figsize=(12, 15))
+        fig2, axes2 = plt.subplots(7, 4, figsize=(12, 15))
         axes1, axes2 = axes1.flatten(), axes2.flatten()
         file_idx, axes1_idx = -1, -1
         lkw_all, lzg_all, sat_all, s2_all = [], [], [], []
@@ -781,7 +801,8 @@ class Validator:
                     file_idx += 1
                     ax_line = axes[y, x]
                     ax_scatter = axes[y, x + 1]
-                    s, pos = selected_stations[file_idx], positions[file_idx]
+                    s = selected_stations[file_idx]
+                #    pos = positions[file_idx]
                     file = glob(os.path.join(dir_validation, "*%s*.csv" % s))[0]
                     v = pd.read_csv(file)
                     unique_dates = np.unique(v["date"])
@@ -810,35 +831,35 @@ class Validator:
                     ax_scatter.set_xlim(-int(-offset / 1.1) * 0.2, offset)
                     ax_scatter.set_title("r-value: %s" % np.round(regression.rvalue, 2))
                     off = 6.75 if "Crailsheim" in s else int(offset / 1.1) * 0.25
-                    ax_scatter.text(pos, off,
-                             "slope: %s\nintercept: %s" % (np.round(regression.slope, 1), np.round(b, 1)), fontsize=11)
+            #        ax_scatter.text(pos, off,
+             #                "slope: %s\nintercept: %s" % (np.round(regression.slope, 1), np.round(b, 1)), fontsize=11)
                     ax_scatter.set_ylabel("Station")
                     ax_scatter.set_xlabel("Sentinel-2")
-                    if any([target in file for target in ["Reken", "Braunschweig-Flughafen", "Odelzhausen", "Lenting",
-                                                          "Herzhausen", "Crailsheim"]]):
-                        # cars
-                        car_sum = np.float32(v["KFZ_R1"] + v["KFZ_R2"])
-                        axes1_idx += 1
-                        ax = axes1[axes1_idx]
-                        ax.plot(unique_dates, station_sum, color=BAST_COLOR)
-                        ax.plot(unique_dates, car_sum, color="#185a61")
-                        ax.plot(unique_dates, s2_sum, color=S2_COLOR)
-                        ax.set_xticklabels(formatted_dates, rotation=90)
-                        ax.set_title(s)
-                        ax.set_ylabel("Count")
-                        print("%s: %s" % (s, np.round(linregress(s2_sum, car_sum).rvalue, 2)))
-                        # line different truck types
-                        ax = axes2[axes1_idx]
-                        lkw_sum = np.float32(v["Lkw_R1"] + v["Lkw_R2"])
-                        lzg_sum = np.float32(v[NAME_TR1] + v[NAME_TR2])
-                        sat_sum = np.float32(v["Sat_R1"] + v["Sat_R2"])
-                        colors = ["#c99638", BAST_COLOR, "#b3c938"]
-                        for color, values in zip(np.hstack([colors, S2_COLOR]), [lkw_sum, lzg_sum, sat_sum, s2_sum]):
-                            ax.plot(unique_dates, values, color=color)
-                        ax.set_title(s)
-                        ax.set_ylabel("Count")
-                        ax.set_xticklabels(formatted_dates, rotation=90)
-                        # scatter different truck types
+#                    if any([target in file for target in ["Reken", "Braunschweig-Flughafen", "Odelzhausen", "Lenting",
+ #                                                         "Herzhausen", "Crailsheim"]]):
+                    # cars
+                    car_sum = np.float32(v["KFZ_R1"] + v["KFZ_R2"])
+                    axes1_idx += 1
+                    ax = axes1[axes1_idx]
+                    ax.plot(unique_dates, station_sum, color=BAST_COLOR)
+                    ax.plot(unique_dates, car_sum, color="#185a61")
+                    ax.plot(unique_dates, s2_sum, color=S2_COLOR)
+                    ax.set_xticklabels(formatted_dates, rotation=90)
+                    ax.set_title(s)
+                    ax.set_ylabel("Count")
+                   # print("%s: %s" % (s, np.round(linregress(s2_sum, car_sum).rvalue, 2)))
+                    # line different truck types
+                    ax = axes2[axes1_idx]
+                    lkw_sum = np.float32(v["Lkw_R1"] + v["Lkw_R2"])
+                    lzg_sum = np.float32(v[NAME_TR1] + v[NAME_TR2])
+                    sat_sum = np.float32(v["Sat_R1"] + v["Sat_R2"])
+                    colors = ["#c99638", BAST_COLOR, "#b3c938"]
+                    for color, values in zip(np.hstack([colors, S2_COLOR]), [lkw_sum, lzg_sum, sat_sum, s2_sum]):
+                        ax.plot(unique_dates, values, color=color)
+                    ax.set_title(s)
+                    ax.set_ylabel("Count")
+                    ax.set_xticklabels(formatted_dates, rotation=90)
+                    # scatter different truck types
         fig3, axes3 = plt.subplots(1, 3, figsize=(10, 3))
         s2_all = np.hstack(s2_all)
         for ax, title, values, c in zip(axes3.flatten(), ["Lkw", "Lzg", "Sat"],
@@ -858,20 +879,20 @@ class Validator:
             ax.set_ylabel("Station")
             ax.set_xlabel("Sentinel-2")
         fig3.tight_layout()
-        fig3.savefig(os.path.join(dir_validation_plots, "bast_truck_types_scatter.png"), dpi=600)
+        fig3.savefig(os.path.join(dir_validation_plots, "bast_truck_types_scatter1.png"), dpi=600)
         plt.close(fig3)
-        axes1[4].legend(["Station trucks", "Station cars", "Sentinel-2 trucks"], bbox_to_anchor=(0.75, -0.4))
-        fig.tight_layout()
-        fig.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_lineplots_scatterplots.png"), dpi=600)
+       # fig.tight_layout()
+       # fig.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_lineplots_scatterplots2.png"), dpi=600)
         plt.close(fig)
+        axes1[-4].legend(["Station trucks", "Station cars", "Sentinel-2 trucks"], bbox_to_anchor=(0.5, -1.2))
         fig1.tight_layout()
-        fig1.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_car_lineplots.png"),
+        fig1.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_car_lineplots1.png"),
                      dpi=600)
         plt.close(fig1)
-        axes2[4].legend(['Station "Lkw"', 'Station "Lzg"', 'Station "Sat"', "Sentinel-2 trucks"],
-                        bbox_to_anchor=(0.75, -0.4))
+        axes2[-4].legend(['Station "Lkw"', 'Station "Lzg"', 'Station "Sat"', "Sentinel-2 trucks"],
+                         bbox_to_anchor=(0.5, -1.2))
         fig2.tight_layout()
-        fig2.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_truck_types_lineplots.png"),
+        fig2.savefig(os.path.join(dir_validation_plots, "bast_selected_stations_truck_types_lineplots1.png"),
                      dpi=600)
         plt.close(fig2)
 
@@ -884,7 +905,7 @@ if __name__ == "__main__":
             pass
     else:
         try:
-           # os.remove(boxes_validation_file)
+          #  os.remove(boxes_validation_file)
             print("")
         except FileNotFoundError:
             pass
@@ -899,7 +920,7 @@ if __name__ == "__main__":
             break  # messy..
         else:
             print("%s\nStation: %s" % ("-" * 50, station))
-          #  validator.validate_acquisition_wise(acquisition_period)
-            validator.plot_bast_summary()
+            validator.validate_acquisition_wise(acquisition_period)
+        #    validator.plot_bast_summary()
             validator.plot_at_selected_stations()
             break
