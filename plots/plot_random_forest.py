@@ -97,7 +97,7 @@ def plot_confusion_matrix(conf_matrix):
 
 
 def plot_feature_importance(rf_model):
-    fig, ax = plt.subplots(figsize=(7, 0.75))
+    fig, ax = plt.subplots(figsize=(10, 1))
     left = 0
     feature_importances = np.round(rf_model.feature_importances_, 2)
     argsort = np.argsort(feature_importances)[::-1]
@@ -105,35 +105,32 @@ def plot_feature_importance(rf_model):
                        "B02_centered", "B08_centered"])[argsort]
     colors = np.array(["#757575", "#dc4ff0", "#39e7ad", "#ff0000", "#00ff00", "#0000ff", "#7c0912"])[argsort]
     feature_importances = feature_importances[argsort]
-    offsets = [0.18, 0.12, 0.1, 0.08, 0.04, -0.18, -0.7]
+    offsets = [0.18, 0.12, 0, -0.1, -0.1, -0.5, -0.3]
     for c, importance, label, idx in zip(colors, feature_importances, labels, range(len(labels))):
         ax.barh(0, importance, height=0.2, color=c, left=left, edgecolor="black", label="label")
         text = ax.text(left + importance * 0.5, -0.01, "%s" % importance, ha="center",
-                       va="center", color="w", weight="bold")
-        text = ax.text(left + importance * offsets[idx], [-0.24, 0.16][int(int(idx / 2) == idx / 2)], label)
+                       va="center", color="w", weight="bold", fontsize=16)
+        text = ax.text(left + importance * offsets[idx], [-0.24, 0.16][int(int(idx / 2) == idx / 2)], label, fontsize=16)
         left += importance
-    text = ax.text(-0.015, -0.05, "0")
-    text = ax.text(1.005, -0.05, "1")
+    text = ax.text(-0.015, -0.05, "0", fontsize=16)
+    text = ax.text(1.005, -0.05, "1", fontsize=16)
     ax.set_xlabel("")
     plt.ylabel("")
     plt.subplots_adjust(bottom=0.8)
     plt.subplots_adjust(top=0.9)
-#    plt.title("RF feature importances", fontsize=12)
     plt.xlim(0, left)
     positions = feature_importances.copy()
     for i in range(len(feature_importances)):
         positions[i] = np.sum(feature_importances[:i])
-    #ax.set_xticks(positions)
     ax.set_xticks([])
-    #ax.set_xticklabels(labels, rotation=30)
     ax.set_yticks([])
     ax.set_yticklabels("")
     plt.tight_layout()
-    plt.subplots_adjust(left=0.05)
+    plt.subplots_adjust(left=0.05, bottom=0.3)
     plt.savefig(os.path.join(dirs["plots"], "rf_feature_importances_barplot.png"), dpi=500)
     plt.close()
 
 
 if __name__ == "__main__":
-    plot_random_forest(rf, variables_list, labels_list)
+    #plot_random_forest(rf, variables_list, labels_list)
     plot_feature_importance(rf)

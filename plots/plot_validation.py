@@ -20,7 +20,7 @@ dirs = dict(main="F:\\Masterarbeit\\DLR\\project\\1_truck_detection")
 dirs["plots"] = os.path.join("F:" + os.sep + "Masterarbeit", "THESIS", "general", "plots")
 dirs["validation"] = os.path.join(dirs["main"], "validation")
 
-box_validation_pd = pd.read_csv(os.path.join(dirs["validation"], "boxes_validation.csv"))
+#box_validation_pd = pd.read_csv(os.path.join(dirs["validation"], "boxes_validation.csv"))
 #bast_validation_pd = pd.read_csv(os.path.join(dirs["validation"], "validation_run.csv"))
 #series_pd = pd.read_csv(os.path.join(dirs["validation"], "series_comparison.csv"))
 countries = list(pd.read_csv(os.path.join(dirs["main"], "training", "tiles.csv"), sep=",")["validation_countries"].dropna())
@@ -110,21 +110,25 @@ def plot_bast_validation_rvalues():
         station_means_weekdays[w] = np.mean(weekday_station)
         s2_means_weekdays[w] = np.mean(weekday_s2)
     # plot rvalue by weekday
-    fig, axes = plt.subplots(1, 2, figsize=(12, 3))
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3))
     # plot mean absolute values by weekday
+    for ax in axes:
+        ax.set_xticklabels(weekday_names, fontsize=16, rotation=45)
     ax = axes[0]
     ax.plot(weekday_names, s2_means_weekdays, S2_COLOR, linewidth=2.5)
     ax.plot(weekday_names, station_means_weekdays, "#3e6118", linewidth=2.5)
-    ax.set_ylabel("Truck count")
-    ax.set_title("Truck count by weekday")
+    ax.set_ylabel("Truck count", fontsize=16)
+    ax.set_title("(a)", fontsize=16)
     ax.set_xlim(-0.1, 6.1)
+    ax.text(1, 50, "Sentinel-2 trucks", fontsize=14)
+    ax.text(3.9, 82, "Station trucks", fontsize=14)
     ax = axes[1]
     ax.bar(x=weekday_names, height=rvalues_weekdays, color=S2_COLOR)
     for idx, rvalue in enumerate(rvalues_weekdays):
-        ax.text(idx - 0.15, rvalue + 0.005, str(rvalue), fontsize=10)
+        ax.text(idx - 0.4, rvalue + 0.005, str(rvalue), fontsize=14)
     ax.set_ylim(0, 1)
-    ax.set_ylabel("pearson r-value")
-    ax.set_title("Pearson r-values by weekday")
+    ax.set_ylabel("Pearson r-value", fontsize=16)
+    ax.set_title("(b)", fontsize=16)
     ax.set_xlim(-0.5, 6.5)
     plt.tight_layout()
     plt.savefig(os.path.join(dirs["validation"], "plots", "comparison_by_weekday_lineplot_bar.png"), dpi=500)
@@ -157,28 +161,30 @@ def plot_bast_validation_rvalues():
     names.append(r"$\bf{""Median""}$")
     rvalues_argsort = np.argsort(rvalues)
     names_sorted, colors_sorted = np.array(names)[rvalues_argsort], np.array(colors)[rvalues_argsort]
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 9))
     axes[0].barh(y=names_sorted, width=rvalues[rvalues_argsort], color=colors_sorted)
     for idx, rvalue in enumerate(rvalues[rvalues_argsort]):
-        axes[0].text(rvalue + 0.001, idx - 0.3, str(rvalue), fontsize=10)
-    axes[0].set_xlabel("pearson r-value")
+        axes[0].text(rvalue - 0.09, idx - 0.28, str(rvalue), fontsize=16, color="w")
+    axes[0].set_xlabel("Pearson r-value", fontsize=18)
     handles = [plt.Rectangle((0, 0), 1, 1, color=color) for color in np.unique(colors_sorted)[:-1]]
-    axes[0].legend(handles, ["Motorway (A)", "Primary/Trunk (B)"])
+    axes[0].legend(handles, ["Motorway (A)", "Primary/Trunk (B)"], fontsize=14)
+    axes[0].set_yticklabels(names_sorted, fontsize=18)
     axes[0].set_ylim(-0.5, len(names_sorted) - 0.5)
     axes[0].set_xlim(0, 1.03)
-    axes[0].set_title("Pearson r-value")
+   # axes[0].set_title("Pearson r-value", fontsize=16)
     # plot slopes
     axes[1].barh(y=names_sorted, width=slopes[rvalues_argsort], color=colors_sorted)
+ #   axes[1].set_ylabel(names_sorted, fontsize=12)
     axes[1].set_yticks([])
     axes[1].set_yticklabels([])
-    axes[1].set_xlabel("Lin. regression slope")
+    axes[1].set_xlabel("Lin. regression slope", fontsize=18)
     axes[1].set_ylim(-0.5, len(names_sorted) - 0.5)
     axes[1].set_xlim(0, 2.52)
     for idx, slope in enumerate(slopes[rvalues_argsort]):
-        axes[1].text(slope + 0.001, idx - 0.3, str(slope), fontsize=10)
-    axes[1].set_title("Slope")
+        axes[1].text(slope - 0.2, idx - 0.28, str(slope), fontsize=16, color="w")
+   # axes[1].set_title("Slope")
     fig.tight_layout()
-    fig.savefig(os.path.join(dirs["validation"], "plots", "station_validation_rvalues_by_station_barh.png"), dpi=500)
+    fig.savefig(os.path.join(dirs["validation"], "plots", "station_validation_rvalues_by_station_barh.pdf"), dpi=500)
     plt.close(fig)
 
 

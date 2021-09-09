@@ -143,13 +143,14 @@ def plot_truck_rgb_spectra(truth_training_csv, truth_validation_csv):
     truth_pd = pd.concat([truth_training_pd, truth_validation_pd])
     #fig, axes = plt.subplots(4, 1, figsize=(5, 5))
     fig, axes = plt.subplots(1, 4, figsize=(9, 2))
-    labels = ["red", "green", "blue", "background"]
+    class_labels = ["red", "green", "blue", "background"]
+    labels = ["(a)", "(b)", "(c)", "(d)"]
     colors = ["#FF0000", "#00FF00", "#0000FF", "#000000"]
     bands = ["B02", "B03", "B04", "B08"]
     vis_std = []
     vis_nir_std = []
-    for ax, label, color in zip(axes.flatten(), labels, colors):
-        values = np.float32([truth_pd[truth_pd.label == label][b] for b in ["blue", "green", "red", "nir"]])
+    for ax, class_label, label, color in zip(axes.flatten(), class_labels, labels, colors):
+        values = np.float32([truth_pd[truth_pd.label == class_label][b] for b in ["blue", "green", "red", "nir"]])
         mean_values, std_values = values.mean(1), values.std(1)
         vis_std.append(mean_values[0:3].std())
         vis_nir_std.append(mean_values.std())
@@ -160,9 +161,11 @@ def plot_truck_rgb_spectra(truth_training_csv, truth_validation_csv):
         ax.scatter(bands, values.mean(1), color=color, alpha=0.5, s=20)
         ax.set_ylim(0, 0.3)
         ax.margins(x=0)
-        ax.set_title("'%s'" % label)
+        ax.set_title("%s" % label, fontsize=16)
         if ax == axes[0]:
-            ax.set_ylabel("Reflectance")
+            ax.set_ylabel("Reflectance", fontsize=14)
+        ax.set_xticklabels(bands, fontsize=14)
+        plt.rc("ytick", labelsize=14)
     plt.tight_layout()
     plt.savefig(os.path.join(dirs["plots"], "label_band_spectra.png"), dpi=500)
     plt.close()
@@ -195,7 +198,7 @@ def plot_truck_rgb_spectra(truth_training_csv, truth_validation_csv):
 
 
 if __name__ == "__main__":
-    plot_box_size(training_validation_tiles_pd)
+   # plot_box_size(training_validation_tiles_pd)
    # plot_truck_rgb(truth_path_training, truth_path_validation)
     plot_truck_rgb_spectra(truth_path_training, truth_path_validation)
 

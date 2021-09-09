@@ -151,7 +151,7 @@ def plot_label_stats(truth):
 
 
 def plot_label_stats(truth):
-    fig, axes = plt.subplots(4, 3, figsize=(10, 6), gridspec_kw={"width_ratios": [3, 2, 1]})
+    fig, axes = plt.subplots(4, 3, figsize=(11, 6), gridspec_kw={"width_ratios": [3, 2, 1]})
     ax_features = [FEATURES[:4], FEATURES[4:6], [FEATURES[-1]]]
     ax_features_clear = [["B02_centered", "B03_centered", "B04_centered", "B08_centered"],
                          ["B03_B02_ratio", "B04_B02_ratio"], ["reflectance_variance"]]
@@ -176,19 +176,20 @@ def plot_label_stats(truth):
             ax.vlines(xticks, np.min(ax_values, 1), np.max(ax_values, 1), color="k", linestyle="-", lw=1)
             if ax_idx == 0:
                 ax.set_ylim(-0.25, 0.25)
-                ax.text(-1.4, -0.02, "'%s'" % label, fontsize=13)  # place class label
+                ax.text(-1.7, -0.02, "'%s'" % label, fontsize=18)  # place class label
             elif ax_idx == 1:
                 ax.set_ylim(-0.7, 0.7)
             elif ax_idx == 2:
                 ax.set_ylim(0, 0.004)
             if label_idx == 3:
-                ax.set_xticklabels(ax_features_clear[ax_idx])
+                ax.set_xticklabels(ax_features_clear[ax_idx], fontsize=18, rotation=45)
                 ax.set_xticks(xticks)
             else:
                 ax.set_xticks([])
                 ax.set_xticklabels([])
-    for title, ax in zip(["Centered band reflectances", "Band ratios", "VIS variance"], axes[0]):
-        ax.set_title(title)
+            plt.rc("ytick", labelsize=15)
+    for title, ax in zip(["(a)", "(b)", "(c)"], axes[0]):
+        ax.set_title(title, fontsize=18)
     plt.tight_layout()
     plt.savefig(os.path.join(dirs["plots"], "featuere_statistics_violinplot.png"), dpi=600)
     plt.close()
@@ -230,5 +231,5 @@ if __name__ == "__main__":
     for these_area_column_names in area_column_names:
         plot_labels_relative(tiles_pd, these_area_column_names)
     plot_label_stats(truth_pd)
-    plot_label_distribution(truth_pd)
-    plot_feature_correlation(truth_pd)
+   # plot_label_distribution(truth_pd)
+   # plot_feature_correlation(truth_pd)
