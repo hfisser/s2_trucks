@@ -19,7 +19,7 @@ arg_sorted = np.argsort(time_offset)
 time_offset_sorted = time_offset[arg_sorted]
 bands_a_sorted, bands_b_sorted = np.array(bands_a)[arg_sorted], np.array(bands_b)[arg_sorted]
 bands = list(bands_a_sorted + "/" + bands_b_sorted)
-fig, ax = plt.subplots(figsize=(5, 3))
+fig, ax = plt.subplots(figsize=(5, 3.5))
 plt.subplots_adjust(bottom=0.15)
 # plot relationship between angle and time offset
 angles = {"B02": 0.022, "B03": 0.030, "B04": 0.034, "B08": 0.026, "B05": 0.038, "B06": 0.042, "B07": 0.046,
@@ -29,8 +29,10 @@ offset_from_b02 = {"B02": 0, "B03":  0.527, "B04":  1.005, "B08":  0.264, "B05":
                    "B8a":  2.055, "B01":  2.314, "B09":  2.586, "B10": 0.851, "B11":  1.468, "B12":  2.085}
 colors = np.hstack([["blue", "green", "red", "#5e0e0e"], np.repeat("#4d4d4d", len(angles.values()) - 4)])
 ax.scatter(angles.values(), offset_from_b02.values(), c=colors.tolist())
-ax.set_ylabel("Time offset [s] relative to B02")
-ax.set_xlabel("Parallax angle relative to B02")
+ax.set_ylabel("Time offset [s]", fontsize=14)
+ax.set_xlabel("Parallax angle", fontsize=14)
+plt.rc("ytick", labelsize=12)
+plt.rc("xtick", labelsize=12)
 off = 0.001
 positions = [[angles["B02"] + off, offset_from_b02["B02"] + off],
              [angles["B03"] + off, offset_from_b02["B03"] + off],
@@ -46,6 +48,6 @@ positions = [[angles["B02"] + off, offset_from_b02["B02"] + off],
              [angles["B11"] - off * 4, offset_from_b02["B11"] + off * 3],
              [angles["B12"] - off * 4, offset_from_b02["B12"] + off * 3]]
 for angle, time, band, pos in zip(angles.values(), offset_from_b02.values(), angles.keys(), positions):
-    ax.text(pos[0], pos[1], band)
+    ax.text(pos[0], pos[1], band, fontsize=12)
 fig.savefig(os.path.join(dir_plots, "s2_temporal_offsets_bands_points.png"), dpi=500)
 plt.close()
