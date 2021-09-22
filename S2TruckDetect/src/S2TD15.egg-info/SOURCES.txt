@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+setup.cfg
+src/S2TD/__init__.py
+src/S2TD15.egg-info/PKG-INFO
+src/S2TD15.egg-info/SOURCES.txt
+src/S2TD15.egg-info/dependency_links.txt
+src/S2TD15.egg-info/top_level.txt
+src/S2TD/test/__init__.py
+src/S2TD/test/test_2td.py

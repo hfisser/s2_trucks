@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: S2TD17
+Version: 0.0.1
+Summary: This package provides a method for automatically detecting moving trucks and vehicles of similar size in Sentinel-2 remote sensing data.
+Home-page: https://github.com/hfisser/S2TD
+Author: Henrik Fisser
+Author-email: henrik.fisser@t-online.de
+License: UNKNOWN
+Project-URL: Bug Tracker, https://github.com/hfisser/S2TD/issues
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# S2TD
+
+A method for automatically detecting moving trucks in Sentinel-2 remote sensing data.
+
