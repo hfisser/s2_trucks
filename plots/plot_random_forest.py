@@ -24,7 +24,7 @@ labels_list = pickle.load(open(os.path.join(dirs["truth"], "validation_labels.pi
 
 
 def plot_random_forest(rf_model, test_variables, test_labels):
-    test_pred = rf.predict(test_variables)
+    test_pred = rf._predict(test_variables)
     plot_confusion_matrix(metrics.confusion_matrix(test_labels, test_pred, labels=[2, 3, 4, 1]))
     accuracy = metrics.accuracy_score(test_labels, test_pred)
     report = metrics.classification_report(test_labels, test_pred)

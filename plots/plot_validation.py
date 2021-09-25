@@ -171,6 +171,7 @@ def plot_bast_validation_rvalues():
     axes[0].set_yticklabels(names_sorted, fontsize=18)
     axes[0].set_ylim(-0.5, len(names_sorted) - 0.5)
     axes[0].set_xlim(0, 1.03)
+    axes[0].set_xticklabels(axes[0].get_xticklabels(), fontsize=14)
    # axes[0].set_title("Pearson r-value", fontsize=16)
     # plot slopes
     axes[1].barh(y=names_sorted, width=slopes[rvalues_argsort], color=colors_sorted)
@@ -180,6 +181,7 @@ def plot_bast_validation_rvalues():
     axes[1].set_xlabel("Lin. regression slope", fontsize=18)
     axes[1].set_ylim(-0.5, len(names_sorted) - 0.5)
     axes[1].set_xlim(0, 2.52)
+    axes[1].set_xticklabels(axes[1].get_xticklabels(), fontsize=14)
     for idx, slope in enumerate(slopes[rvalues_argsort]):
         axes[1].text(slope - 0.2, idx - 0.28, str(slope), fontsize=16, color="w")
    # axes[1].set_title("Slope")
